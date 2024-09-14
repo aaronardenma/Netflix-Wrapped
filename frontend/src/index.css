@@ -1,0 +1,62 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  font-family: "Roboto", "sans-serif";
+  background-color: #242424;
+  color: white;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+header {
+  width: 100%;
+  padding: 50px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.header__title {
+  font-size: 64px;
+  font-weight: bold;
+  text-align: center;
+  margin-bottom: 16px;
+}
+
+.header__para {
+  font-size: 32px;
+  font-weight: bold;
+  text-align: center;
+  color: #c0c4cc;
+}
+
+.red {
+  color: red;
+}
+
+.container {
+  margin: 0 auto;
+  max-width: 1200px;
+  display: flex;
+  justify-content: center;
+  padding: 1rem;
+}
+
+
+.submit__btn {
+  padding: 8px;
+  border-radius: 8px;
+  color: white;
+}
+
+.submit__btn:hover {
+  cursor:pointer;
+}
+
+.file__input {
+  color: white;
+}

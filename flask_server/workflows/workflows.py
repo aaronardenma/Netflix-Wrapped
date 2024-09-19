@@ -4,7 +4,7 @@ import plotly.express as px
 import nltk
 
 
-K_NETFLIX_TITLES = pd.read_csv('netflix_titles.csv')
+K_NETFLIX_TITLES = pd.read_csv('workflows/netflix_titles.csv')
 
 # Read in Personal Viewing Data & Kaggle Netflix Dataset
 def dataframeSetUp(df: pd.DataFrame) -> pd.DataFrame:
@@ -318,8 +318,8 @@ def getNumOfUniqueMoviesWatched(df:pd.DataFrame) -> int:
 
 # Get Years of Data included
 def getYears(df: pd.DataFrame) -> list:
-    return df['Year'].unique()
+    return df['Year'].unique().tolist()
 
 # Get Netflix Users
 def getUsers(df: pd.DataFrame) -> list:
-    return df['Profile Name'].unique()
+    return df['Profile Name'].unique().tolist()

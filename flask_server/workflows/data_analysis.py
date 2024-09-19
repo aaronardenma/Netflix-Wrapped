@@ -1,8 +1,8 @@
-from workflows import *
+from workflows.workflows import *
 import pandas as pd
 
-def runDataAnalysis(file):
-    df = readData(file)
+def runDataAnalysis(filename):
+    df = readData(filename)
     df = dataframeSetUp(df)
 
     df = startTimeManipulation(df)
@@ -25,8 +25,18 @@ def runDataAnalysis(file):
     return graphs
     # getResults(df)
 
-def readData(file):
-    df = pd.read_csv(file)
+def getUserYearsData(filename):
+    df = readData(filename)
+    df = startTimeManipulation(df)
+    users = getUsers(df)
+    user_years_data = {}
+    for user in users:
+        user_years_data[user] = getUserActiveYears(df, user)
+
+    return user_years_data
+
+def readData(filename):
+    df = pd.read_csv("uploads/" + filename)
     return df
 
 def selectUser(df: pd.DataFrame) -> str:
@@ -52,6 +62,11 @@ def filterYear(df: pd.DataFrame) -> pd.DataFrame:
     df = df[df["Year"] == selectYear(df)]
 
     return df
+
+def getUserActiveYears(df: pd.DataFrame, name: str) -> dict:
+    df = df[df["Profile Name"] == name]
+
+    return getYears(df)
 
 def getResults(df):
     print("NETFLIX Recap:")

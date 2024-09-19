@@ -5,6 +5,7 @@ function FileInput() {
 
     const [file, setFile] = useState(null);
     const [graph, setGraph] = useState({});
+    const [usersYearsData, setUsersYearsData] = useState(null);
 
     const uploadFile = (e) => {
         setFile(e.target.files[0]);

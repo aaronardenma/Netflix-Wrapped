@@ -6,7 +6,7 @@ function NavBar() {
 
     const navBarItems = [
         {name: "Home", path: "/"},
-        {name: "Statistics", path: "/statistics"},
+        {name: "Statistics", path: "/upload"},
         {name: "Contact", path: "/contact"},];
 
     const listItems = navBarItems.map(item => <NavItem name={item.name} key={item.name.toLowerCase()}

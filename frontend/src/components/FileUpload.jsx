@@ -1,10 +1,9 @@
 import axios from 'axios';
 import React, {useState} from 'react';
+import Form from './Form'
 
-function FileInput() {
-
+function FileUpload() {
     const [file, setFile] = useState(null);
-    const [graph, setGraph] = useState({});
     const [usersYearsData, setUsersYearsData] = useState(null);
 
     const uploadFile = (e) => {
@@ -19,31 +18,29 @@ function FileInput() {
         csvFile.append('csv_data', file);
 
         try {
-            const response = await axios.post('http://127.0.0.1:5000/upload', csvFile, {
-                headers: { "Content-Type": "multipart/form-data" }
-            });
+            const response = await axios.post('http://127.0.0.1:5000/upload', csvFile, {withCredentials: true});
             console.log(response.data);
-            setGraph(response.data); // Update the state if needed
+            setUsersYearsData(response.data); // Update the state if needed
         } catch (error) {
             console.error("Error uploading file", error);
         }
         
-        console.log("sent!");
+        console.log("received user and year data!");
     }
-
-    // const graphItems = graph.map(g => <li>{g}</li>)
     
     return (
         <>
             <div className="container">
-                <form className="file__upload" action='/statistics' method="post" encType="multipart/form-data" onSubmit={handleSubmit}>
+                <form className="file__upload" method="post" encType="multipart/form-data" onSubmit={handleSubmit}>
                     <input type="file" className="file__input" name = "csv_data" accept=".csv" onChange={uploadFile} />
                     <br></br>
                     <button type="submit" className="submit__btn" >Upload</button>
                 </form>
             </div>
+            {usersYearsData != null && <Form data={usersYearsData}/>}
+
         </>
     );
 }
 
-export default FileInput
+export default FileUpload

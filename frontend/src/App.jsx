@@ -1,10 +1,9 @@
-import FileInput from "./components/FileInput"
 import {BrowserRouter, Routes, Route} from "react-router-dom"
 import NavBar from "./components/NavBar"
 import Home from "./pages/Home"
-import Statistics from "./pages/Statistics"
+import Upload from "./pages/Upload"
 import Contact from "./pages/Contact"
-
+import Statistics from "./pages/Statistics"
 
 function App() {
   return (
@@ -12,7 +11,8 @@ function App() {
       <NavBar />
       <Routes>
         <Route path="/" element={<Home />} />
-        <Route path="/statistics" element={<Statistics />}/>
+        <Route path="/upload" element={<Upload />}/>
+        <Route path="/statistics" element={<Statistics />} />
         <Route path="/contact" element={<Contact />}/>
       </Routes>
     </BrowserRouter>

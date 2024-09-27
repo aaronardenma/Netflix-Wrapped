@@ -1,10 +1,12 @@
 import string
 import pandas as pd
+import numpy as np
+import plotly
 import plotly.express as px
 import nltk
+import json
 
-
-K_NETFLIX_TITLES = pd.read_csv('workflows/netflix_titles.csv')
+K_NETFLIX_TITLES = pd.read_csv('https://raw.githubusercontent.com/aaronardenma/Netflix-Wrapped/refs/heads/main/flask_server/workflows/netflix_titles.csv')
 
 # Read in Personal Viewing Data & Kaggle Netflix Dataset
 def dataframeSetUp(df: pd.DataFrame) -> pd.DataFrame:
@@ -16,6 +18,9 @@ def dataframeSetUp(df: pd.DataFrame) -> pd.DataFrame:
 
     # Manipulate Title column to remove season and episode information
     df['Title'] = df['Title'].apply(splitSecondOccurence)
+
+    df = startTimeManipulation(df)
+    df = convertDurationToHrs(df)
 
     return df
 
@@ -139,6 +144,17 @@ def generateRatings(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
+### GRAPH CREATION
+
+# JSONIFY CHART DATA AND LAYOUT
+def convertToJson(chart):
+    
+    # chart_props = {"data": [trace.to_plotly_json() for trace in chart.data], 
+    #                "layout": chart.layout.to_plotly_json()}
+    print(chart.data)
+    print(chart.layout)
+    return chart.to_plotly_json()
+
 # Get Most watched Ratings Categories
 
 def getMostWatchedRatings(df: pd.DataFrame) -> pd.DataFrame:
@@ -169,11 +185,18 @@ def createMostWatchedRatingsGraph(df: pd.DataFrame):
 
     # chart.show()
 
-    return chart.to_html(full_html=False)
+    return chart
+
+# Get most watched ratings data
+def getMostWatchedRatingsData(df: pd.DataFrame) -> dict:
+    ratings_list = getMostWatchedRatings(df)['Rating'].tolist()
+    watchtime_list = getMostWatchedRatings(df)['Watchtime (hrs)'].tolist()
+    
+    return {'ratings' : ratings_list,
+            'watchtime': watchtime_list}
 
 # Get total watchtime per Netflix title
-
-def totalTitleWatchtime(df: pd.DataFrame) -> pd.DataFrame:
+def getTotalTitleWatchtime(df: pd.DataFrame) -> pd.DataFrame:
     filtered_title_df = df[['New Title', 'Watchtime (hrs)']]
     sum_title_watchtime_df = (filtered_title_df.groupby(by = ['New Title'], as_index=False)
                         .sum()
@@ -181,10 +204,9 @@ def totalTitleWatchtime(df: pd.DataFrame) -> pd.DataFrame:
                         .rename(columns={'Watchtime (hrs)': 'Total Watchtime (hrs)'}))
     return sum_title_watchtime_df
 
-
 # Create bar graph for Top 10 Most watched netflix titles 
 def createTotalTitleWatchtimeGraph(df: pd.DataFrame):
-    totalTitleWatchtimeDf = totalTitleWatchtime(df)
+    totalTitleWatchtimeDf = getTotalTitleWatchtime(df)
 
     totalTitleWatchtimeDf = totalTitleWatchtimeDf.drop(totalTitleWatchtimeDf[totalTitleWatchtimeDf['New Title'] == 'Unknown'].index)
 
@@ -199,14 +221,19 @@ def createTotalTitleWatchtimeGraph(df: pd.DataFrame):
         'xanchor': 'center',
         'yanchor': 'top',
         'font': {'size': 20}})
-    
-    # chart.show()
 
-    return chart.to_html(full_html=False)
+    return chart
 
+# Get Total Title Watchtime Data
+def getTotalTitleWatchtimeData(df: pd.DataFrame) -> dict:
+    newdf = getTotalTitleWatchtime(df)
+    titles = newdf['New Title'].tolist()
+    watchtime = newdf['Total Watchtime (hrs)'].tolist()
+    return {'titles': titles,
+            'watchtime': watchtime}
 
 # Get total watchtime per media type
-def totalTypeWatchtime(df: pd.DataFrame) -> pd.DataFrame:
+def getTotalTypeWatchtime(df: pd.DataFrame) -> pd.DataFrame:
     filtered_type_df = df[['Type', 'Watchtime (hrs)']]
 
     sum_type_watchtime_df = (filtered_type_df.groupby(by=['Type'], as_index=False)
@@ -217,7 +244,7 @@ def totalTypeWatchtime(df: pd.DataFrame) -> pd.DataFrame:
 
 # Create pie graph for difference in watchtime for media types watched
 def createTotalTypeWatchtimeGraph(df: pd.DataFrame):
-    totalTypeWatchtimeDf = totalTypeWatchtime(df)
+    totalTypeWatchtimeDf = getTotalTypeWatchtime(df)
 
     totalTypeWatchtimeDf = totalTypeWatchtimeDf.drop(totalTypeWatchtimeDf[totalTypeWatchtimeDf['Type'] == 'Unknown'].index)
 
@@ -240,8 +267,14 @@ def createTotalTypeWatchtimeGraph(df: pd.DataFrame):
 
     # chart.show()
 
-    return chart.to_html(full_html = False)
+    return chart
 
+def getTotalTypeWatchtimeData(df: pd.DataFrame) -> dict:
+    types = getTotalTypeWatchtime(df)['Type'].tolist()
+    watchtime = getTotalTypeWatchtime(df)['Total Watchtime (hrs)'].tolist()
+    
+    return {'types': types,
+            'watchtime': watchtime}
 
 # Get Total Netflix Watch Time Watched
 def getTotalWatchtime(df: pd.DataFrame) -> float:
@@ -251,7 +284,7 @@ def getTotalWatchtime(df: pd.DataFrame) -> float:
 
 
 # Get Netflix watchtime per month
-def getWatchTimePerMonth(df: pd.DataFrame) -> pd.DataFrame:
+def getMonthlyWatchtime(df: pd.DataFrame) -> pd.DataFrame:
     filtered_df = df[['Month', 'Watchtime (hrs)']]
     monthly_watchtime = filtered_df.groupby(by=['Month'], as_index = False).sum()
 
@@ -260,7 +293,7 @@ def getWatchTimePerMonth(df: pd.DataFrame) -> pd.DataFrame:
 
 # Create Line Graph for Monthly Watchtime
 def createMonthlyWatchtimeGraph(df: pd.DataFrame):
-    monthlyWatchtime = getWatchTimePerMonth(df)
+    monthlyWatchtime = getMonthlyWatchtime(df)
     print(monthlyWatchtime)
     chart = px.line(monthlyWatchtime, x = 'Month', y = 'Watchtime (hrs)', title = 'Netflix Hourly Watchtime per Month')
     chart.update_xaxes(tick0=1, dtick=1, title_standoff = 25, title_font = {"size": 16},
@@ -277,10 +310,17 @@ def createMonthlyWatchtimeGraph(df: pd.DataFrame):
     
     # chart.show()
 
-    return chart.to_html(full_html = False)
+    return chart
+
+def getMonthlyWatchtimeData(df: pd.DataFrame) -> dict:
+    months = getMonthlyWatchtime(df)['Month'].tolist()
+    watchtime = getMonthlyWatchtime(df)['Watchtime (hrs)'].tolist()
+
+    return {'months' : months,
+            'watchtime' : watchtime}
 
 # Get Netflix watchtime per year
-def getWatchTimePerYear(df: pd.DataFrame) -> pd.DataFrame:
+def getYearlyWatchtime(df: pd.DataFrame) -> pd.DataFrame:
     filtered_df = df[['Year', 'Watchtime (hrs)']]
     yearly_watchtime = filtered_df.groupby(by=['Year'], as_index = False).sum()
 
@@ -289,7 +329,7 @@ def getWatchTimePerYear(df: pd.DataFrame) -> pd.DataFrame:
 
 # Create Line Graph for Monthly Watchtime
 def createYearlyWatchtimeGraph(df: pd.DataFrame):
-    yearly_watchtime = getWatchTimePerYear(df)
+    yearly_watchtime = getYearlyWatchtime(df)
     chart = px.line(yearly_watchtime, x = 'Year', y = 'Watchtime (hrs)', title = 'Netflix Hourly Watchtime per Year')
     chart.update_xaxes(tick0=1, dtick=1, title_standoff = 25, title_font = {"size": 16})
     chart.update_yaxes(tick0 = 0, title_standoff = 25, title_font = {"size": 16}, rangemode="tozero")
@@ -301,17 +341,25 @@ def createYearlyWatchtimeGraph(df: pd.DataFrame):
     
     # chart.show()
 
-    return chart.to_html(full_html = False)
+    return chart
 
+def getYearlyWatchtimeData(df: pd.DataFrame) -> dict:
+    years = getYearlyWatchtime(df)['Year'].tolist()
+    watchtime = getYearlyWatchtime(df)['Watchtime (hrs)'].tolist()
+    
+    return {'years': years,
+            'watchtime': watchtime}
 
 # Number of Unique Titles Watched
 def getTotalUniqueTitlesWatched(df: pd.DataFrame) -> int:
     return len(df['New Title'].unique())
 
+# Number of Unique Shows Watched
 def getNumOfUniqueShowsWatched(df: pd.DataFrame) -> int:
     df = df[df["Type"] == "TV Show"]
     return len(df['New Title'].unique())
 
+# Number of Unique Movies Watched
 def getNumOfUniqueMoviesWatched(df:pd.DataFrame) -> int:
     df = df[df["Type"] == "Movie"]
     return len(df['New Title'].unique())
@@ -323,3 +371,13 @@ def getYears(df: pd.DataFrame) -> list:
 # Get Netflix Users
 def getUsers(df: pd.DataFrame) -> list:
     return df['Profile Name'].unique().tolist()
+
+
+def filterUser(df, user):
+    df = df[df['Profile Name'] == user]
+    return df
+
+def filterYear(df, year):
+    
+    df = df[df['Year'] == int(year)]
+    return df

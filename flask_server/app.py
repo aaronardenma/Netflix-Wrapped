@@ -44,8 +44,8 @@ def upload_file():
         file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
 
         session['filename'] = filename
-        print(f"Session ID: {session.sid}")
-        print(f"Session data set: {session.get('filename')}")
+        # print(f"Session ID: {session.sid}")
+        # print(f"Session data set: {session.get('filename')}")
 
         return jsonify(getUserYearsData(filename)), 200
     
@@ -54,8 +54,8 @@ def upload_file():
 @app.route("/statistics", methods = ["POST"])
 def upload_charts():
     filename = session.get('filename')
-    print(f"Session ID: {session.sid}")
-    print(f"Session data retrieved: {filename}")
+    # print(f"Session ID: {session.sid}")
+    # print(f"Session data retrieved: {filename}")
 
     # if filename == '':
     #     return jsonify({"error": "filename not set"}), 400

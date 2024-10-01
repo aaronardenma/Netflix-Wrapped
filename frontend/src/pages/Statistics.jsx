@@ -1,50 +1,53 @@
 import React from 'react';
-import { LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Label } from 'recharts';
-import { useLocation } from 'react-router-dom';
+import { Pie, Tooltip, PieChart } from 'recharts';
+import { useLocation, useNavigate } from 'react-router-dom';
+import LineGraph from '../components/LineGraph';
+import BarGraph from '../components/BarGraph';
+import PieGraph from '../components/PieGraph';
 
 function Statistics() {
     const location = useLocation();
     const {graphs} = location.state || {};
 
+    const navigate = useNavigate();
+
     if (!graphs) {
         return <div>No graph data available</div>; // Show a message if no data
     }
 
-    const testGraphDataX = graphs['monthly_watchtime']['months'];
-    const testGraphDataY = graphs['monthly_watchtime']['watchtime'];
-    const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+    const monthlyWatchtimeData = graphs['monthly_watchtime']
+    const titleWatchtimeData = graphs['total_title_watchtime']
+    const typeWatchtimeData = graphs['total_type_watchtime']
+    const ratingWatchtimeData = graphs['ratings_watchtime']
 
-    const makeData = () => {
-        const data = []
-        for (let i=0; i < testGraphDataX.length; i++) {
-            data.push({
-                name: months[i],
-                hrs: testGraphDataY[i]
-            });
-        };
-
-        return data;
-    }
-
-    const data = makeData();
+    const handleBackClick = () => {
+        navigate("/upload");
+    };
 
     return (
-        <div className='graph__cell'>
-            <h2 >Monthly Watchtime</h2>
-            <LineChart width={600} height={300} data={data} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
-                <Line type="monotone" dataKey="hrs" stroke="#8884d8" />
-                <CartesianGrid stroke="#ccc" strokeDasharray="5 5" />
-                <XAxis dataKey="name">
-                    <Label value="Months" offset={-5} position="insideBottom" /> {/* X Axis Label */}
-                    </XAxis>
-
-                <YAxis>
-                    <Label value="Hours" angle={-90} position="insideLeft" style={{ textAnchor: 'middle' }} /> {/* Y Axis Label */}
-                </ YAxis>
-                <Tooltip />
-            </LineChart>
-            
-        </div>
+        <>
+        
+            <button>Choose New User</button>
+            <form action="">
+                <select name="" id="" defaultValue='default'>
+                    <option value="default" disable>Choose new Year:</option>
+                    <option value="default" >year 1</option>
+                    <option value="default" >year 2</option>
+                </select>
+            </form>
+            <div className="graph__container">
+                <div className='graph__cell'>
+                    <LineGraph data={monthlyWatchtimeData} x_axis_key='month' x_axis_label='Months' y_axis_label='Watchtime (hrs)' title="Monthly Watchtime" />
+                </div>
+                <div className="graph__cell">
+                    <BarGraph data={titleWatchtimeData} x_axis_key='title' x_axis_label='Title' y_axis_key='hrs' y_axis_label='Watchtime (hrs)' title="Top 10 Watched Content" />
+                </div>
+                <div className="graph__cell">
+                    <PieGraph data={typeWatchtimeData} metric='hrs' category_key='type' title="Content Type Breakdown"/>
+                </div>
+            </div>
+        <button onClick={handleBackClick}>Back</button>
+        </>
     )
 }
 

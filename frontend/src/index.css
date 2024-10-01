@@ -3,8 +3,11 @@
   padding: 0;
   box-sizing: border-box;
   font-family: "Roboto", "sans-serif";
+  
+}
+
+body {
   background-color: #242424;
-  color: white;
 }
 
 html {
@@ -44,16 +47,17 @@ nav {
   margin: 0 auto;
   padding: 0 20px;
   height: 100px;
+  /* color: white; */
 }
 
 .logo--text {
   font-weight: bold;
   font-size: 28px;
+  color: white;
 }
 
 .nav__link--list {
   display: flex;
-  
 }
 
 .nav__link {
@@ -64,6 +68,7 @@ nav {
 
 .nav__link--anchor {
   text-decoration: none;
+  color: white;
 }
 
 
@@ -108,6 +113,7 @@ header {
   padding: 8px;
   border-radius: 8px;
   color: white;
+  background-color: #242424;
 }
 
 .submit__btn:hover {

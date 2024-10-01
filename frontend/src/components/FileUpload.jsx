@@ -20,7 +20,8 @@ function FileUpload() {
         try {
             const response = await axios.post('http://127.0.0.1:5000/upload', csvFile, {withCredentials: true});
             console.log(response.data);
-            setUsersYearsData(response.data); // Update the state if needed
+            setUsersYearsData(response.data);
+
         } catch (error) {
             console.error("Error uploading file", error);
         }
@@ -37,7 +38,7 @@ function FileUpload() {
                     <button type="submit" className="submit__btn" >Upload</button>
                 </form>
             </div>
-            {usersYearsData != null && <Form data={usersYearsData}/>}
+            {usersYearsData != null && <Form data={usersYearsData} />}
 
         </>
     );

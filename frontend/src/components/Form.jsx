@@ -1,12 +1,11 @@
 import axios from 'axios';
-import React, {useState} from 'react';
+import React, {useState, useEffect} from 'react';
 import { useNavigate } from 'react-router-dom';
 
 function Form({data}) {
     const [userSelected, setUserSelected] = useState("default");
     const [yearSelected, setYearSelected] = useState("default");
     const [userYears, setUserYears] = useState([]);
-    const [graphs, setGraphs] = useState({});
     
     const users = Object.keys(data)
     const navigate = useNavigate();
@@ -32,8 +31,6 @@ function Form({data}) {
                 }, 
                 {withCredentials: true}
             );
-            setGraphs(response.data);
-            console.log(response.data);
 
             navigate("/statistics", {state: {graphs: response.data}})
         } catch (error) {
@@ -60,6 +57,7 @@ function Form({data}) {
                 {yearSelected != "default" &&
                     <button type='submit' className='submit__btn'>Get Stats!</button>}
             </form>
+            
     </div>)
 }
 

@@ -1,4 +1,4 @@
-from workflows.workflows import *
+from src.workflows import *
 import pandas as pd
 
 def getJsonGraphData(filename, user, year):

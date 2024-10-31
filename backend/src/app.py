@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify, session, render_template
 from flask_session import Session
-from workflows.data_analysis import *
+from data_analysis import *
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 import os

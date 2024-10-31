@@ -1,6 +1,6 @@
 # Netflix-Wrapped
 
-**Netflix Wrapped** is a work in progress web app that allows Netflix users to visualize their viewing data as provided by Netflix. 
+**Netflix Wrapped** is a work in progress web app that allows Netflix users to visualize their viewing data as provided by Netflix. Netflix data can downloaded by submitting a request to Netflix [here](https://www.netflix.com/account/getmyinfo), with more details on their [help](https://help.netflix.com/en/node/100624) page.
 
 ## Current Features:
 * Input .csv Netflix viewing data and view select rechart graphs

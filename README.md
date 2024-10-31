@@ -30,6 +30,10 @@ When the web app is first loaded by the user, the user gets to submit .csv files
 	```
 	pip install -r requirements.txt
 	```
+* Install required dependencies from pacakge.json for React frontend (React version 18.3.1)
+	```
+	npm intall
+	```
 
 ## Getting Started:
 Set up config files for both the frontend and backend for development, staging, and production.

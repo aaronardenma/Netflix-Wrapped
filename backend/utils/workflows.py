@@ -5,8 +5,14 @@ import plotly
 import plotly.express as px
 import nltk
 import json
+import os
 
-K_NETFLIX_TITLES = pd.read_csv('https://raw.githubusercontent.com/aaronardenma/Netflix-Wrapped/refs/heads/main/flask_server/workflows/netflix_titles.csv')
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+csv_path = os.path.join(BASE_DIR, 'netflix_titles.csv')
+
+
+
+K_NETFLIX_TITLES = pd.read_csv(csv_path)
 
 # Read in Personal Viewing Data & Kaggle Netflix Dataset
 def dataframeSetUp(df: pd.DataFrame) -> pd.DataFrame:
@@ -336,17 +342,19 @@ def createMonthlyWatchtimeGraph(df: pd.DataFrame):
 
 def getMonthlyWatchtimeData(df: pd.DataFrame) -> dict:
     months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
-    watchtime = getMonthlyWatchtime(df)['Watchtime (hrs)'].tolist()
+    monthly_df = getMonthlyWatchtime(df)  # has columns 'Month', 'Watchtime (hrs)'
+
+    # Create a dict mapping month number to watchtime
+    month_to_watchtime = {row['Month']: row['Watchtime (hrs)'] for _, row in monthly_df.iterrows()}
 
     data = []
-    for i in range(len(months)):
+    for i, month_name in enumerate(months, start=1):  # i from 1 to 12
+        hrs = month_to_watchtime.get(i, 0)  # default 0 if no data for that month
         data.append({
-            'month': months[i],
-            'hrs': watchtime[i]
+            'month': month_name,
+            'hrs': hrs
         })
     return data
-    # return {'months' : months,
-    #         'watchtime' : watchtime}
 
 # Get Netflix watchtime per year
 def getYearlyWatchtime(df: pd.DataFrame) -> pd.DataFrame:

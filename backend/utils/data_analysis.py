@@ -1,12 +1,24 @@
-from src.workflows import *
+from rest_framework.response import Response
+from utils.workflows import *
 import pandas as pd
+import os
 
-def getJsonGraphData(filename, user, year):
-    df = readData(filename)
-    df = dataframeSetUp(df)
+def getJsonGraphData(dataframe, user, year):
+    print(f"Received user: {user}, year: {year}")
+
+    # df = readData(filename)
+    print(f"Original dataframe rows: {len(dataframe)}")
+
+    df = dataframeSetUp(dataframe)
 
     df = filterUser(df, user)
+    print(f"After filterUser rows: {len(df)}")
+
+
     df = filterYear(df, year)
+    print(f"After filterYear rows: {len(df)}")
+    if len(df) == 0:
+        return Response({"error": "No data found after filtering user and year"}, status=400)
 
     df = generateShowTitles(df)
     df = generateMediaType(df)
@@ -56,8 +68,15 @@ def getUserYearsData(filename):
     return user_years_data
 
 def readData(filename):
-    df = pd.read_csv("/Users/aaronma/Desktop/Netflix Wrapped/flask_server/uploads/" + filename)
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))  
+    # get backend folder path (one level up)
+    backend_dir = os.path.dirname(BASE_DIR)
+    # build path to uploads folder in backend
+    file_path = os.path.join(backend_dir, 'uploads', filename)
+    
+    df = pd.read_csv(file_path)
     return df
+
 
 def selectUserConsole(df: pd.DataFrame) -> str:
     print("Who's viewing data would you like to see?")

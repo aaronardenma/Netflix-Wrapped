@@ -2,6 +2,7 @@ altair==5.1.2
 altair-data-server==0.4.1
 altair-viewer==0.4.0
 appnope==0.1.4
+asgiref==3.9.0
 asttokens==2.4.1
 attrs==23.1.0
 backcall==0.2.0
@@ -19,6 +20,9 @@ cycler==0.12.1
 debugpy==1.8.1
 decorator==5.1.1
 defusedxml==0.7.1
+Django==5.2.4
+django-cors-headers==4.7.0
+djangorestframework==3.16.0
 docopt==0.6.2
 executing==2.0.1
 fastjsonschema==2.20.0
@@ -71,6 +75,7 @@ portpicker==1.6.0
 prompt-toolkit==3.0.43
 protobuf==4.25.3
 psutil==5.9.8
+psycopg2-binary==2.9.10
 ptyprocess==0.7.0
 pure-eval==0.2.2
 pyarrow==15.0.1
@@ -78,6 +83,7 @@ pydeck==0.8.1b0
 Pygments==2.17.2
 pyparsing==3.1.2
 python-dateutil==2.8.2
+python-decouple==3.8
 python-Levenshtein==0.25.0
 pytz==2023.3.post1
 pyzmq==25.1.2
@@ -90,6 +96,7 @@ rpds-py==0.10.3
 six==1.16.0
 smmap==5.0.1
 soupsieve==2.6
+sqlparse==0.5.3
 stack-data==0.6.3
 streamlit==1.32.1
 tenacity==8.2.3

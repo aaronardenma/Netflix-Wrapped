@@ -5,6 +5,7 @@ import Upload from "./pages/Upload"
 import Contact from "./pages/Contact"
 import Statistics from "./pages/Statistics"
 
+
 function App() {
   return (
     <BrowserRouter>
@@ -12,7 +13,7 @@ function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/upload" element={<Upload />}/>
-        <Route path="/statistics" element={<Statistics />} />
+        <Route path="/statistics/" element={<Statistics />} />
         <Route path="/contact" element={<Contact />}/>
       </Routes>
     </BrowserRouter>

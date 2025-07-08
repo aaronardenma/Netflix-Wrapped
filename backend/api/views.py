@@ -32,7 +32,6 @@ class UploadCSVView(APIView):
         try:
             df = pd.read_csv(file_obj)
 
-            # Validate columns
             if list(df.columns) != EXPECTED_COLUMNS:
                 return Response({
                     "error": "CSV headers do not match expected Netflix viewing data columns.",
@@ -64,7 +63,6 @@ class ExtractCSVView(APIView):
                     "found_columns": list(df.columns)
                 }, status=400)
 
-            # your existing extraction logic
             user_years_map = {}
             users = df['Profile Name'].unique().tolist()
             for user in users:

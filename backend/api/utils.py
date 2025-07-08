@@ -35,7 +35,6 @@ def validate_csv_columns(func):
                 "found_columns": list(df.columns)
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Attach DataFrame to request for use in view
         request.csv_df = df
 
         return func(self, request, *args, **kwargs)

@@ -28,7 +28,7 @@ def validate_csv_columns(func):
         except Exception as e:
             return Response({"error": "Failed to read CSV: " + str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-        if list(df.columns) != EXPECTED_COLUMNS:
+        if not set(EXPECTED_COLUMNS).issubset(set(df.columns)):
             return Response({
                 "error": "CSV headers do not match expected columns.",
                 "expected_columns": EXPECTED_COLUMNS,
@@ -40,3 +40,5 @@ def validate_csv_columns(func):
         return func(self, request, *args, **kwargs)
 
     return wrapper
+
+

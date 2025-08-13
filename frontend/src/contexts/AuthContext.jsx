@@ -2,6 +2,9 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { getCookie } from "../utils/cookies";
+import { useNavigate } from "react-router-dom";
+import { setAuthContext } from "../services/api/apiClient";
+import { authAPI } from "@/services/api";
 
 const AuthContext = createContext();
 
@@ -19,14 +22,26 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const [csrfToken, setCsrfToken] = useState(null);
   const queryClient = useQueryClient();
-  const backendURL = "http://127.0.0.1:8000";
+  const nav = useNavigate();
+
+  // Handle logout/token expiry - called by axios interceptor
+  const handleAuthError = () => {
+    console.log('Handling auth error: clearing user state and redirecting...');
+    setUser(null);
+    setIsAuthenticated(false);
+    queryClient.removeQueries(["me"]);
+    queryClient.clear();
+    nav("/");
+  };
 
   // Fetch CSRF token
   const fetchCSRFToken = async () => {
     try {
-      await fetch(`${backendURL}/api/csrf/`, { credentials: "include" });
+      // Use regular fetch for CSRF endpoint (before auth is established)
+      await authAPI.getCSRF()
+      
       const token = getCookie("csrftoken");
-      console.log("CSRF token for checkAuthStatus:", token);
+      console.log("CSRF token fetched:", token);
       setCsrfToken(token);
       return token;
     } catch (error) {
@@ -36,46 +51,53 @@ export const AuthProvider = ({ children }) => {
   };
 
   // Check authentication status
-  const checkAuthStatus = async (token) => {
+  const checkAuthStatus = async () => {
     try {
-      const res = await fetch(`${backendURL}/api/auth/me/`, {
-        credentials: "include", // send cookies
-        headers: {
-          "X-CSRFToken": token || "", // pass the CSRF token
-        },
-      });
-
-      if (res.ok) {
-        const userData = await res.json();
+      const response = await authAPI.me();
+      
+      if (response.status === 200) {
+        const userData = response.data;
         setUser(userData);
         setIsAuthenticated(true);
         queryClient.setQueryData(["me"], userData);
-      } else {
-        setIsAuthenticated(false);
-        setUser(null);
+        return true;
       }
     } catch (error) {
       console.error("Auth check failed:", error);
-      setIsAuthenticated(false);
-      setUser(null);
+      // Don't handle auth errors here - interceptor handles them
+      if (error.message !== 'Authentication expired') {
+        setIsAuthenticated(false);
+        setUser(null);
+      }
+      return false;
     }
   };
+
+  // Initialize auth context reference for axios interceptor
+  useEffect(() => {
+    setAuthContext({
+      handleAuthError,
+      isAuthenticated,
+      user
+    });
+  }, [isAuthenticated, user]);
 
   // Initialize on mount
   useEffect(() => {
     const initialize = async () => {
       setLoading(true);
 
-      let token = getCookie("csrftoken"); // get CSRF from cookies first
-
+      // Get or fetch CSRF token
+      let token = getCookie("csrftoken");
       if (!token) {
-        token = await fetchCSRFToken(); // fetch CSRF token if missing
+        token = await fetchCSRFToken();
       } else {
         setCsrfToken(token);
       }
 
+      // Check if user is authenticated
       if (token) {
-        await checkAuthStatus(token); // call checkAuthStatus with token
+        await checkAuthStatus();
       } else {
         setIsAuthenticated(false);
         setUser(null);
@@ -87,35 +109,46 @@ export const AuthProvider = ({ children }) => {
     initialize();
   }, []);
 
-  const login = async (userData) => {
-    setUser(userData);
-    setIsAuthenticated(true);
-    queryClient.setQueryData(["me"], userData);
-    await queryClient.invalidateQueries(["me"]);
+  // Periodic auth check (optional - runs every 10 minutes)
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const interval = setInterval(async () => {
+      console.log('Performing periodic auth check...');
+      await checkAuthStatus();
+    }, 10 * 60 * 1000); // Check every 10 minutes
+
+    return () => clearInterval(interval);
+  }, [isAuthenticated]);
+
+  const login = async () => {
+    setLoading(true);
+    try {
+      const response = await authAPI.me();
+      
+      if (response.status === 200) {
+        const userData = response.data;
+        setUser(userData);
+        setIsAuthenticated(true);
+        queryClient.setQueryData(["me"], userData);
+      }
+    } catch (error) {
+      console.error("Login rehydrate failed", error);
+      // Auth errors handled by interceptor
+    } finally {
+      setLoading(false);
+    }
   };
 
   const logout = async () => {
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/auth/logout/", {
-        method: "POST",
-        credentials: "include", // important to send cookies
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRFToken": csrfToken || "", // Include CSRF token if needed
-        },
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.error || "Logout failed");
-      }
-
-      setUser(null);
-      setIsAuthenticated(false);
-      queryClient.removeQueries(["me"]);
-      queryClient.clear();
+      await authAPI.logout();
+      console.log('Logout successful');
     } catch (error) {
       console.error("Logout error:", error);
+    } finally {
+      // Always clear state regardless of API response
+      handleAuthError();
     }
   };
 
@@ -133,7 +166,8 @@ export const AuthProvider = ({ children }) => {
     login,
     logout,
     getCSRFToken,
-    checkAuthStatus: () => checkAuthStatus(csrfToken),
+    checkAuthStatus,
+    handleAuthError, // Expose for testing
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

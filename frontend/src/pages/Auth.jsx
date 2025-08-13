@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
-import { Input } from "@/components/ui/input"
+import { Input } from "@/components/ui/input";
 
 export default function Auth() {
   const { type } = useParams();
@@ -20,7 +20,7 @@ export default function Auth() {
 
     const email = e.target.email.value;
     const password = e.target.password.value;
-    
+
     // Get name fields only for registration
     const firstName = !isLogin ? e.target.firstName.value : undefined;
     const lastName = !isLogin ? e.target.lastName.value : undefined;
@@ -38,7 +38,7 @@ export default function Auth() {
         : `${backendURL}/api/auth/register/`;
 
       // Build request body based on login/register
-      const requestBody = isLogin 
+      const requestBody = isLogin
         ? { email, password }
         : { email, password, firstName, lastName };
 
@@ -58,8 +58,8 @@ export default function Auth() {
         setMessage(data.message || "Success!");
 
         if (isLogin && data.user) {
-          console.log("Login successful, user data:", data.user);
-          await login(data.user);
+          console.log("Login successful");
+          await login(); // fetch user fresh
           nav("/");
         } else if (!isLogin) {
           // For registration, you might want to auto-login or redirect to login
@@ -83,7 +83,7 @@ export default function Auth() {
 
   return (
     <div className="flex flex-col items-center p-8 md:p-16">
-      <h2 className="font-semibold mb-4">
+      <h2 className="font-semibold text-lg mb-4">
         {isLogin ? "Nice to see you again" : "Create your Account"}
       </h2>
       <div className="border p-12">
@@ -115,7 +115,7 @@ export default function Auth() {
               </div>
             </>
           )}
-          
+
           <div className="mb-4">
             <p className="mb-2 text-xs ml-2 text-gray-500">Email</p>
             <Input
@@ -127,7 +127,7 @@ export default function Auth() {
               disabled={submitting}
             />
           </div>
-          
+
           <div className="mb-4">
             <p className="mb-2 text-xs ml-2 text-gray-500">Password</p>
             <Input
@@ -139,25 +139,30 @@ export default function Auth() {
               disabled={submitting}
             />
           </div>
-          
+
           <button
             className="outline w-full text-sm rounded bg-black text-white font-semibold p-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             type="submit"
             disabled={submitting}
           >
-            {submitting 
-              ? "Please wait..." 
-              : (isLogin ? "Sign in" : "Create Account")
-            }
+            {submitting
+              ? "Please wait..."
+              : isLogin
+              ? "Sign in"
+              : "Create Account"}
           </button>
         </form>
-        
+
         {message && (
-          <p className={`text-xs mt-4 ${message.includes('successful') ? 'text-green-600' : 'text-red-600'}`}>
+          <p
+            className={`text-xs mt-4 ${
+              message.includes("successful") ? "text-green-600" : "text-red-600"
+            }`}
+          >
             {message}
           </p>
         )}
-        
+
         <hr className="my-4" />
         <p className="text-xs">
           {isLogin ? "Don't have an account? " : "Already have an account? "}

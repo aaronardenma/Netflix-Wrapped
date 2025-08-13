@@ -51,47 +51,12 @@ class User(AbstractBaseUser, PermissionsMixin):
         return self.email
 
 
-# class Upload(models.Model):
-#     user = models.ForeignKey(User, on_delete=models.CASCADE)
-#     filename = models.CharField(max_length=255)
-#     upload_time = models.DateTimeField(auto_now_add=True)
-#     status = models.CharField(max_length=20, default='processed')  # or 'pending'
-#     original_csv_path = models.TextField()  # path to uploaded file (e.g., /uploads/xyz.csv)
-
-#     def __str__(self):
-#         return f"{self.filename} ({self.user.email})"
-
-
-class ViewingData(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    show_title = models.TextField()
-    watch_date = models.DateField()
-    duration_minutes = models.IntegerField()
-    genre = models.CharField(max_length=100, blank=True, null=True)
-    device = models.CharField(max_length=100, blank=True, null=True)
-    metadata = JSONField(default=dict, blank=True)  # for any extra columns
+class ViewingStat(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='viewing_stats')
+    profile_name = models.CharField()
+    year = models.IntegerField()
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    data = models.JSONField()  # Store all 4 arrays here as one dictionary
 
     def __str__(self):
-        return f"{self.show_title} on {self.watch_date}"
-
-
-class WrappedResult(models.Model):
-    user = models.OneToOneField(User, on_delete=models.CASCADE)
-    top_genres = ArrayField(models.CharField(max_length=100), blank=True, default=list)
-    most_watched_show = models.CharField(max_length=255)
-    total_watch_time_minutes = models.IntegerField()
-    generated_at = models.DateTimeField(auto_now_add=True)
-    custom_json = JSONField(default=dict, blank=True)  # for storing arbitrary analytics
-
-    def __str__(self):
-        return f"Wrapped for {self.upload}"
-
-
-class Chart(models.Model):
-    result = models.ForeignKey(WrappedResult, on_delete=models.CASCADE)
-    type = models.CharField(max_length=50)  # e.g., 'bar', 'pie'
-    config = JSONField()  # Recharts or Plotly config + data
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self):
-        return f"{self.type} chart for {self.result}"
+        return f"{self.user.email} - {self.profile_name} - {self.year}"

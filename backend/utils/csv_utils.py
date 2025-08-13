@@ -16,6 +16,7 @@ EXPECTED_COLUMNS = [
 
 def validate_csv(file) -> pd.DataFrame:
     try:
+        file.seek(0)  # Reset pointer to start of file before reading
         df = pd.read_csv(file)
     except Exception as e:
         raise ValidationError(f"Unable to read CSV file: {str(e)}")

@@ -5,33 +5,40 @@ import os
 
 def getJsonGraphData(dataframe, user, year):
     print(f"Received user: {user}, year: {year}")
+    print(f"Pre-filtered dataframe rows: {len(dataframe)}")
 
-    # df = readData(filename)
-    print(f"Original dataframe rows: {len(dataframe)}")
-
+    # Since we're receiving pre-filtered data from ExtractCSVView,
+    # we can skip the filtering steps and just do the setup
+    
+    # Set up the dataframe (this should not filter, just transform)
     df = dataframeSetUp(dataframe)
+    print(f"After dataframeSetUp rows: {len(df)}")
 
-    df = filterUser(df, user)
-    print(f"After filterUser rows: {len(df)}")
-
-
-    df = filterYear(df, year)
-    print(f"After filterYear rows: {len(df)}")
+    # Skip filterUser and filterYear since data is already filtered
+    # in ExtractCSVView for performance
+    
     if len(df) == 0:
-        return Response({"error": "No data found after filtering user and year"}, status=400)
+        return {"error": "No data found after processing"}
 
+    # Apply transformations
     df = generateShowTitles(df)
     df = generateMediaType(df)
     df = generateRatings(df)
 
-    # Graph Data
+    # Generate all graphs
     graphs = {}
-    graphs["total_title_watchtime"] = getTotalTitleWatchtimeData(df)
-    graphs["total_type_watchtime"] = getTotalTypeWatchtimeData(df)
-    graphs["monthly_watchtime"] = getMonthlyWatchtimeData(df)
-    graphs["ratings_watchtime"] = getMostWatchedRatingsData(df)
+    
+    try:
+        graphs["total_title_watchtime"] = getTotalTitleWatchtimeData(df)
+        graphs["total_type_watchtime"] = getTotalTypeWatchtimeData(df)
+        graphs["monthly_watchtime"] = getMonthlyWatchtimeData(df)
+        graphs["ratings_watchtime"] = getMostWatchedRatingsData(df)
+    except Exception as e:
+        print(f"Error generating graph data: {str(e)}")
+        return {"error": f"Failed to generate graph data: {str(e)}"}
     
     return graphs
+
 
 ##### CONSOLE
 def runConsoleDataAnalysis(filename):

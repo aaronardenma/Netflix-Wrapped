@@ -359,7 +359,7 @@ const DropzoneFileList = forwardRef((props, ref) => {
       ref={ref}
       aria-label="dropzone-file-list"
       {...props}
-      className={cn("flex flex-col gap-4", props.className)}>
+      className={cn("flex flex-col", props.className)}>
       {props.children}
     </ol>
   );

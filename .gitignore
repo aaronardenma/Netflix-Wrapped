@@ -1,0 +1,9 @@
+backend/mysite/__pycache__
+backend/api/__pycache__
+backend/api/migrations/__pycache__
+backend/api/views/__pycache__
+backend/utils/__pycache__
+backend/.venv
+backend/.env
+
+.DS_Store

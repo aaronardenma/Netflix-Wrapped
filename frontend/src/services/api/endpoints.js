@@ -16,6 +16,15 @@ export const authAPI = {
       token,
       password,
     }),
+  changePassword: ({ currentPassword, newPassword }) =>
+    apiClient.post("/api/auth/password/change/", {
+      currentPassword,
+      newPassword,
+    }),
+  wipeAccountData: ({ currentPassword }) =>
+    apiClient.post("/api/auth/account/wipe-data/", { currentPassword }),
+  deleteAccount: ({ currentPassword }) =>
+    apiClient.post("/api/auth/account/delete/", { currentPassword }),
 
   // JWT Token endpoints (if needed for manual token management)
   getToken: (credentials) => apiClient.post("/api/auth/token/", credentials),

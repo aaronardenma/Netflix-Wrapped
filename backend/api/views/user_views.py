@@ -5,6 +5,7 @@ from django.contrib.auth.tokens import default_token_generator
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.mail import send_mail
+from django.db import transaction
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 from smtplib import SMTPException
@@ -15,6 +16,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from ..authentication import JWTCookieAuthentication
 from rest_framework_simplejwt.exceptions import TokenError
+from ..models import NetflixProfile, Upload
 
 
 User = get_user_model()
@@ -260,4 +262,84 @@ class LogoutView(APIView):
             samesite=settings.SESSION_COOKIE_SAMESITE
         )
 
+        return response
+
+
+class ChangePasswordView(APIView):
+    authentication_classes = [JWTCookieAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        current_password = request.data.get("currentPassword", "")
+        new_password = request.data.get("newPassword", "")
+
+        if not current_password or not new_password:
+            return Response({"error": "Current and new password required"}, status=400)
+
+        user = request.user
+        if not user.check_password(current_password):
+            return Response({"error": "Current password is incorrect"}, status=400)
+
+        try:
+            validate_password(new_password, user=user)
+        except ValidationError as exc:
+            return Response({"error": list(exc.messages)}, status=400)
+
+        user.set_password(new_password)
+        user.save(update_fields=["password"])
+
+        response = Response({"message": "Password updated successfully"})
+        response.delete_cookie("access_token", path="/", samesite=settings.SESSION_COOKIE_SAMESITE)
+        response.delete_cookie("refresh_token", path="/", samesite=settings.SESSION_COOKIE_SAMESITE)
+        return response
+
+
+class WipeUserDataView(APIView):
+    authentication_classes = [JWTCookieAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        current_password = request.data.get("currentPassword", "")
+        if not current_password:
+            return Response({"error": "Current password required"}, status=400)
+
+        if not request.user.check_password(current_password):
+            return Response({"error": "Current password is incorrect"}, status=400)
+
+        with transaction.atomic():
+            uploads_deleted, _ = Upload.objects.filter(user=request.user).delete()
+            profiles_deleted, _ = NetflixProfile.objects.filter(user=request.user).delete()
+
+        return Response({
+            "message": "Your saved data has been removed.",
+            "uploadsDeleted": uploads_deleted,
+            "profilesDeleted": profiles_deleted,
+        })
+
+
+class DeleteAccountView(APIView):
+    authentication_classes = [JWTCookieAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        current_password = request.data.get("currentPassword", "")
+        if not current_password:
+            return Response({"error": "Current password required"}, status=400)
+
+        user = request.user
+        if not user.check_password(current_password):
+            return Response({"error": "Current password is incorrect"}, status=400)
+
+        refresh_token = request.COOKIES.get("refresh_token")
+        if refresh_token:
+            try:
+                RefreshToken(refresh_token).blacklist()
+            except Exception:
+                pass
+
+        user.delete()
+
+        response = Response({"message": "Account deleted successfully"})
+        response.delete_cookie("access_token", path="/", samesite=settings.SESSION_COOKIE_SAMESITE)
+        response.delete_cookie("refresh_token", path="/", samesite=settings.SESSION_COOKIE_SAMESITE)
         return response

@@ -1,6 +1,16 @@
 from django.urls import path
 from api.views.csv_views import QuickExtractCSVView, PriorityProcessView, GetDataView, ProcessingStatusView, StoredDataView, GetStoredDataView
-from api.views.user_views import RegisterView, LoginView, LogoutView, MeView, PasswordResetRequestView, PasswordResetConfirmView
+from api.views.user_views import (
+    RegisterView,
+    LoginView,
+    LogoutView,
+    MeView,
+    PasswordResetRequestView,
+    PasswordResetConfirmView,
+    ChangePasswordView,
+    WipeUserDataView,
+    DeleteAccountView,
+)
 from api.views.image_views import FetchPosterView
 from api.views.views import CSRFCookieView
 
@@ -17,6 +27,9 @@ urlpatterns = [
     path('auth/logout/', LogoutView.as_view(), name='logout'),
     path("auth/password-reset/request/", PasswordResetRequestView.as_view(), name="password-reset-request"),
     path("auth/password-reset/confirm/", PasswordResetConfirmView.as_view(), name="password-reset-confirm"),
+    path("auth/password/change/", ChangePasswordView.as_view(), name="password-change"),
+    path("auth/account/wipe-data/", WipeUserDataView.as_view(), name="wipe-account-data"),
+    path("auth/account/delete/", DeleteAccountView.as_view(), name="delete-account"),
 
     path('csv/quick-extract/', QuickExtractCSVView.as_view(), name='quick-extract'),
     path('priority-process/', PriorityProcessView.as_view(), name='priority-process'),

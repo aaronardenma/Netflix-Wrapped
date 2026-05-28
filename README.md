@@ -37,6 +37,27 @@ When the web app is first loaded by the user, the user gets to submit .csv files
 
 ## Getting Started:
 Set up config files for both the frontend and backend for development, staging, and production.
+
+To start the backend and frontend with Docker:
+```
+docker compose up --build
+```
+
+This uses the local Postgres database configured in `backend/.env`. Make sure Postgres is running on your machine first.
+
+The frontend will be available at `http://localhost:3000` and the backend at `http://localhost:8000`.
+
+For password reset emails, configure SMTP values in `backend/.env`:
+```
+EMAIL_HOST=smtp.example.com
+EMAIL_PORT=587
+EMAIL_HOST_USER=your-smtp-user
+EMAIL_HOST_PASSWORD=your-smtp-password
+EMAIL_USE_TLS=true
+DEFAULT_FROM_EMAIL=no-reply@example.com
+FRONTEND_URL=http://localhost:3000
+```
+
 To start backend in development mode:
 ```
 flask run

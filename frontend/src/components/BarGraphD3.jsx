@@ -50,30 +50,34 @@ export function BarGraphD3({
       .style("font-family", "Montserrat, sans-serif");
 
     // Scales
-    const tempText = svg.append("text").attr("font-size", "12px").attr("visibility", "hidden");
-let maxLabelWidth = 0;
-data.forEach(d => {
-  tempText.text(d[x_axis_key]);
-  const bbox = tempText.node().getBBox();
-  if (bbox.width > maxLabelWidth) maxLabelWidth = bbox.width;
-});
-tempText.remove();
+    const tempText = svg
+      .append("text")
+      .attr("font-size", "12px")
+      .attr("visibility", "hidden");
+    let maxLabelWidth = 0;
+    data.forEach((d) => {
+      tempText.text(d[x_axis_key]);
+      const bbox = tempText.node().getBBox();
+      if (bbox.width > maxLabelWidth) maxLabelWidth = bbox.width;
+    });
+    tempText.remove();
 
-// Adjust left margin
-margin.left = Math.max(margin.left, maxLabelWidth + 10);
+    // Adjust left margin
+    margin.left = Math.max(margin.left, maxLabelWidth + 10);
 
-// Y scale
-const y = d3.scaleBand()
-  .domain(data.map(d => d[x_axis_key]))
-  .range([margin.top, height - margin.bottom])
-  .padding(0.2);
+    // Y scale
+    const y = d3
+      .scaleBand()
+      .domain(data.map((d) => d[x_axis_key]))
+      .range([margin.top, height - margin.bottom])
+      .padding(0.2);
 
-// X scale
-const x = d3.scaleLinear()
-  .domain([0, d3.max(data, d => +d[y_axis_key])])
-  .nice()
-  .range([margin.left, width - margin.right]);
-
+    // X scale
+    const x = d3
+      .scaleLinear()
+      .domain([0, d3.max(data, (d) => +d[y_axis_key])])
+      .nice()
+      .range([margin.left, width - margin.right]);
 
     // Y-axis
     const yAxisG = svg
@@ -100,15 +104,22 @@ const x = d3.scaleLinear()
       .attr("width", (d) => x(d[y_axis_key]) - margin.left)
       .attr("fill", (d) => color(d[x_axis_key]))
       .on("mouseover", (event, d) => {
-        d3.select(event.currentTarget).attr("fill", d3.color(color(d[x_axis_key])).brighter(0.8));
+        d3.select(event.currentTarget).attr(
+          "fill",
+          d3.color(color(d[x_axis_key])).brighter(0.8)
+        );
         tooltip.transition().duration(200).style("opacity", 1);
         tooltip
-          .html(`<strong>${x_axis_key}:</strong> ${d[x_axis_key]}<br><strong>${y_axis_key}:</strong> ${d[y_axis_key]}`)
+          .html(
+            `<strong>${x_axis_key}:</strong> ${d[x_axis_key]}<br><strong>${y_axis_key}:</strong> ${d[y_axis_key]}`
+          )
           .style("left", `${event.pageX + 10}px`)
           .style("top", `${event.pageY - 28}px`);
       })
       .on("mousemove", (event) => {
-        tooltip.style("left", `${event.pageX + 10}px`).style("top", `${event.pageY - 28}px`);
+        tooltip
+          .style("left", `${event.pageX + 10}px`)
+          .style("top", `${event.pageY - 28}px`);
       })
       .on("mouseout", (event, d) => {
         d3.select(event.currentTarget).attr("fill", color(d[x_axis_key]));

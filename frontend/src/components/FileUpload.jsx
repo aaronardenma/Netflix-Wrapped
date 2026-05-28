@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { useSelector } from "react-redux";
 import { useNavigate } from "react-router-dom";
 import {
   Dropzone,
@@ -11,27 +12,79 @@ import {
   DropzoneTrigger,
   useDropzone,
 } from "./ui/dropzone";
-import { CloudUploadIcon, Trash2Icon, Loader2Icon, ZapIcon } from "lucide-react";
+import {
+  ArrowRightIcon,
+  CheckCircle2Icon,
+  CloudUploadIcon,
+  DatabaseIcon,
+  ExternalLinkIcon,
+  FileSpreadsheetIcon,
+  Loader2Icon,
+  ShieldCheckIcon,
+  SparklesIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
-import {netflixAPI} from "@/services/api/"
+import { netflixAPI } from "@/services/api/";
+import { selectAuth } from "@/store/authSlice";
+
+const workflowSteps = [
+  {
+    title: "Request your file",
+    description: "Open Netflix account data and request the viewing history CSV.",
+  },
+  {
+    title: "Upload the CSV",
+    description: "Drop the file here so the app can read profiles and years.",
+  },
+  {
+    title: "Generate insights",
+    description: "Go to Statistics, pick a profile, and the latest year starts first.",
+  },
+];
+
+const supportItems = [
+  {
+    icon: ShieldCheckIcon,
+    title: "Private by default",
+    description: "Use the app without an account for a temporary session.",
+  },
+  {
+    icon: DatabaseIcon,
+    title: "Saved when signed in",
+    description: "Authenticated uploads are stored for faster profile comparisons.",
+  },
+  {
+    icon: FileSpreadsheetIcon,
+    title: "Netflix CSV only",
+    description: "Upload the ViewingActivity.csv file from Netflix.",
+  },
+];
+
+const SESSION_UPLOAD_KEY = "netflixWrapped:lastAnonymousUpload";
+
+const formatDuration = (startTime) => {
+  const elapsedMs = performance.now() - startTime;
+  return `${(elapsedMs / 1000).toFixed(2)}s (${Math.round(elapsedMs)}ms)`;
+};
 
 export default function FileUpload() {
-  const [file, setFile] = useState(null);
+  const { isAuthenticated } = useSelector(selectAuth);
   const [availableUsers, setAvailableUsers] = useState([]);
   const [userYearsMap, setUserYearsMap] = useState({});
-  const [availableYears, setAvailableYears] = useState([]);
-  const [selectedUser, setSelectedUser] = useState("");
-  const [selectedYear, setSelectedYear] = useState("");
-  const [loading, setLoading] = useState(false);
   const [backgroundProcessing, setBackgroundProcessing] = useState(false);
-  const [jobId, setJobId] = useState(null);
   const [processingStatus, setProcessingStatus] = useState("");
-  const [priorityProcessing, setPriorityProcessing] = useState(false);
-  const navigate = useNavigate(); 
+  const uploadStartTimeRef = useRef(null);
+  const navigate = useNavigate();
+
+  const profileCount = availableUsers.length;
+  const yearCount = useMemo(() => {
+    const uniqueYears = new Set(Object.values(userYearsMap).flat());
+    return uniqueYears.size;
+  }, [userYearsMap]);
 
   const dropzone = useDropzone({
     onDropFile: async (file) => {
-      setFile(file);
       await extractUserYearMap(file);
       return {
         status: "success",
@@ -46,34 +99,57 @@ export default function FileUpload() {
   });
 
   const extractUserYearMap = async (file) => {
-    const formData = new FormData();
-    formData.append("file", file);
-
     try {
+      uploadStartTimeRef.current = performance.now();
+      console.info(`[CSV processing] Started processing ${file.name}`);
       setBackgroundProcessing(true);
 
-      // const res = await fetch("http://127.0.0.1:8000/api/csv/quick-extract/", {
-      //   method: "POST",
-      //   body: formData,
-      //   credentials: "include",
-      // });
-      const res = await netflixAPI.quickExtractCSV(file)
-      console.log(res)
+      const res = await netflixAPI.quickExtractCSV(file);
 
       const response = res.data;
 
       setUserYearsMap(response.profile_years);
       setAvailableUsers(Object.keys(response.profile_years).sort());
-      setJobId(response.job_id);
-      setProcessingStatus("Processing all combinations in background...");
 
-      startPollingStatus(response.job_id);
+      sessionStorage.setItem(
+        SESSION_UPLOAD_KEY,
+        JSON.stringify({
+          jobId: response.job_id,
+          profileYears: response.profile_years,
+          readyProfileYears: response.ready_profile_years || {},
+        })
+      );
 
-      toast.success("CSV uploaded! Select a profile/year and we'll prioritize processing it.", {
-        autoClose: 5000,
-        theme: "colored",
-      });
+      setProcessingStatus(
+        response.status === "completed"
+          ? "Upload processed and ready."
+          : "Processing all combinations in background..."
+      );
 
+      if (response.status === "completed") {
+        setBackgroundProcessing(false);
+        console.info(
+          `[CSV processing] Completed full CSV processing in ${formatDuration(uploadStartTimeRef.current)}`
+        );
+      } else {
+        console.info(
+          `[CSV processing] Initial CSV upload/extraction completed in ${formatDuration(uploadStartTimeRef.current)}. Background processing is still running.`
+        );
+      }
+
+      toast.success(
+        "CSV uploaded. Choose a profile on the Statistics page to generate insights.",
+        {
+          autoClose: 5000,
+          theme: "colored",
+        }
+      );
+
+      const params = new URLSearchParams();
+      if (!isAuthenticated) {
+        params.set("job_id", response.job_id);
+      }
+      navigate(`/statistics${params.toString() ? `?${params.toString()}` : ""}`);
     } catch (err) {
       console.error("Extract error:", err);
       toast.error(`Failed to extract data: ${err.message}`, {
@@ -84,338 +160,216 @@ export default function FileUpload() {
     }
   };
 
-  const startPollingStatus = (jobId) => {
-    const pollInterval = setInterval(async () => {
-      try {
-        // const res = await fetch(`http://127.0.0.1:8000/api/processing-status/${jobId}/`, {
-        //   credentials: "include",
-        // });
-
-        const res = await netflixAPI.getProcessingStatus(jobId)
-        console.log(res)
-
-        if (res.ok) {
-          const status = res.data.status;
-
-          if (status.status === "completed") {
-            setBackgroundProcessing(false);
-            setProcessingStatus("All data processed!");
-            clearInterval(pollInterval);
-            toast.success("Background processing completed!", {
-              theme: "colored",
-            });
-          } else if (status.status === "error") {
-            setBackgroundProcessing(false);
-            setProcessingStatus(`Processing error: ${status.message}`);
-            clearInterval(pollInterval);
-          } else {
-            setProcessingStatus("Processing remaining combinations in background...");
-          }
-        }
-      } catch (error) {
-        console.error("Status polling error:", error);
-      }
-    }, 5000); // Poll every 5 seconds
-
-    setTimeout(() => clearInterval(pollInterval), 600000); // Clean up after 10 minutes
-  };
-
-  const pollForPriorityResult = async (maxAttempts = 10) => {
-    let attempts = 0;
-
-    const checkResult = async () => {
-      try {
-        // const response = await fetch("http://127.0.0.1:8000/api/get-data/", {
-        //   method: "POST",
-        //   headers: {
-        //     "Content-Type": "application/json",
-        //   },
-        //   body: JSON.stringify({
-        //     user: selectedUser,
-        //     year: selectedYear,
-        //     job_id: jobId,
-        //   }),
-        //   credentials: "include",
-        // });
-
-        const response = await netflixAPI.getData(selectedUser, selectedYear, jobId)
-
-        if (response.ok) {
-          const responseData = response.data;
-
-          if (responseData.status === "ready") {
-            setPriorityProcessing(false);
-            setLoading(false);
-
-            // Navigate to /statistics with query params only (no state)
-            navigate(
-              `/statistics?profile=${encodeURIComponent(selectedUser)}&year=${encodeURIComponent(selectedYear)}`
-            );
-            return true;
-          }
-        }
-
-        attempts++;
-        if (attempts < maxAttempts) {
-          setTimeout(checkResult, 1000);
-        } else {
-          setPriorityProcessing(false);
-          setLoading(false);
-          toast.error("Priority processing is taking longer than expected. Please try again.", {
-            theme: "colored",
-          });
-        }
-      } catch (error) {
-        console.error("Priority polling error:", error);
-        attempts++;
-        if (attempts < maxAttempts) {
-          setTimeout(checkResult, 2000);
-        } else {
-          setPriorityProcessing(false);
-          setLoading(false);
-          toast.error("Error checking priority processing status.", {
-            theme: "colored",
-          });
-        }
-      }
-    };
-
-    checkResult();
-  };
-
-  useEffect(() => {
-    if (selectedUser && userYearsMap[selectedUser]) {
-      setAvailableYears(userYearsMap[selectedUser]);
-      setSelectedYear("");
-    } else {
-      setAvailableYears([]);
-      setSelectedYear("");
-    }
-  }, [selectedUser, userYearsMap]);
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!selectedUser || !selectedYear) {
-      toast.error("Please select a profile and year.", {
-        theme: "colored",
-      });
-      return;
-    }
-
-    try {
-      setLoading(true);
-
-      // Check if data is already available
-      // const response = await fetch("http://127.0.0.1:8000/api/get-data/", {
-      //   method: "POST",
-      //   headers: {
-      //     "Content-Type": "application/json",
-      //   },
-      //   body: JSON.stringify({
-      //     user: selectedUser,
-      //     year: selectedYear,
-      //     job_id: jobId,
-      //   }),
-      //   credentials: "include",
-      // });
-
-      const response = await netflixAPI.getData(selectedUser, selectedYear, jobId)
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const responseData = response.data;
-
-      if (responseData.status === "ready") {
-        // Navigate to statistics page with URL params only
-        navigate(
-          `/statistics?profile=${encodeURIComponent(selectedUser)}&year=${encodeURIComponent(selectedYear)}`
-        );
-      } else if (responseData.status === "priority_processing") {
-        setPriorityProcessing(true);
-        toast.info(
-          `⚡ Processing ${selectedUser} - ${selectedYear} with priority!`,
-          {
-            autoClose: 3000,
-            theme: "colored",
-          }
-        );
-
-        // Start polling for priority result
-        pollForPriorityResult();
-      } else {
-        toast.info(
-          "Your selection is being processed. Please wait a moment...",
-          {
-            autoClose: 5000,
-            theme: "colored",
-          }
-        );
-        setLoading(false);
-      }
-    } catch (err) {
-      console.error("Submit error:", err);
-      toast.error(`Failed to get data: ${err.message}`, {
-        autoClose: 10000,
-        theme: "colored",
-      });
-      setLoading(false);
-    }
-  };
-
   return (
-    <div className="min-h-screen bg-gray-50 text-gray-900 py-16 px-4">
-      <div className="mx-auto max-w-2xl bg-white border border-gray-200 rounded-xl p-8 shadow-lg space-y-8">
-        <h2 className="text-3xl font-bold text-center mb-4">
-          Upload Your <span className="text-red-600">Netflix</span> History
-        </h2>
-
-        <Dropzone {...dropzone}>
-          <div>
-            <div className="flex justify-between items-center mb-2 text-sm text-gray-600">
-              <DropzoneDescription>
-                Upload your Netflix viewing history CSV
-              </DropzoneDescription>
-              <DropzoneMessage />
+    <main className="min-h-screen bg-[#f4f1ec] px-4 py-10 text-gray-950 sm:px-6 lg:px-8">
+      <div className="mx-auto flex max-w-7xl flex-col gap-8">
+        <section className="grid gap-8 lg:grid-cols-[1.05fr_0.95fr] lg:items-end">
+          <div className="space-y-5">
+            <div className="inline-flex items-center gap-2 rounded-full border border-red-200 bg-white/80 px-3 py-1 text-sm font-semibold text-red-700 shadow-sm">
+              <SparklesIcon className="h-4 w-4" />
+              Netflix Wrapped upload workflow
             </div>
-            <DropZoneArea>
-              <DropzoneTrigger className="flex flex-col w-full items-center gap-4 p-10 rounded-lg border-2 border-dashed border-gray-300 text-center text-sm hover:bg-gray-100 transition-colors duration-200">
-                <CloudUploadIcon className="size-8 text-gray-400" />
-                <div>
-                  <p className="font-semibold text-gray-700">Upload CSV</p>
-                  <p className="text-sm text-gray-500">
-                    Click or drag to upload
-                  </p>
+            <div className="max-w-3xl space-y-4">
+              <h1 className="text-4xl font-bold leading-tight text-gray-950 sm:text-5xl">
+                Turn Netflix viewing history into profile-level insights.
+              </h1>
+              <p className="max-w-2xl text-base leading-7 text-gray-700 sm:text-lg">
+                Start by downloading your Netflix account data, then upload the viewing activity CSV here. You can save uploads with an account or generate insights for a one-time session.
+              </p>
+            </div>
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <a
+                href="https://www.netflix.com/account/getmyinfo"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center justify-center gap-2 rounded-md bg-gray-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-gray-800"
+              >
+                Get Netflix data
+                <ExternalLinkIcon className="h-4 w-4" />
+              </a>
+              <a
+                href="#upload-panel"
+                className="inline-flex items-center justify-center gap-2 rounded-md border border-gray-300 bg-white px-4 py-3 text-sm font-semibold text-gray-900 transition hover:border-red-300 hover:text-red-700"
+              >
+                Upload CSV
+                <ArrowRightIcon className="h-4 w-4" />
+              </a>
+            </div>
+          </div>
+
+          <div className="grid gap-3 rounded-lg border border-gray-200 bg-white/80 p-4 shadow-sm">
+            {workflowSteps.map((step, index) => (
+              <div key={step.title} className="flex gap-4">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-red-600 text-sm font-bold text-white">
+                  {index + 1}
                 </div>
-              </DropzoneTrigger>
-            </DropZoneArea>
+                <div>
+                  <h2 className="text-sm font-bold text-gray-950">{step.title}</h2>
+                  <p className="mt-1 text-sm leading-6 text-gray-600">{step.description}</p>
+                </div>
+              </div>
+            ))}
           </div>
-          {dropzone.fileStatuses.length > 0 && (
-            <DropzoneFileList>
-              {dropzone.fileStatuses.map((file) => (
-                <DropzoneFileListItem
-                  key={file.id}
-                  file={file}
-                  className="rounded px-3 py-2 mb-2 bg-gray-50 border border-gray-200"
-                >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-gray-700">
-                        {file.fileName}
-                      </p>
-                      <p className="text-xs text-gray-500">
-                        {(file.file.size / (1024 * 1024)).toFixed(2)} MB
-                      </p>
-                    </div>
-                    <DropzoneRemoveFile className="bg-white">
-                      <Trash2Icon className="text-red-500 hover:text-red-600 transition" />
-                    </DropzoneRemoveFile>
+        </section>
+
+        <section className="grid gap-6 lg:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
+          <div
+            id="upload-panel"
+            className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm sm:p-6 lg:p-8"
+          >
+            <div className="mb-6 flex flex-col gap-4 border-b border-gray-200 pb-6 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-wide text-red-700">
+                  Upload
+                </p>
+                <h2 className="mt-2 text-2xl font-bold text-gray-950">
+                  Add your viewing activity file
+                </h2>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-gray-600">
+                  The app reads profile names and available years first, then lets you pick the exact recap to generate.
+                </p>
+              </div>
+              <div className="inline-flex w-fit items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-semibold text-gray-700">
+                {isAuthenticated ? (
+                  <>
+                    <DatabaseIcon className="h-4 w-4 text-red-600" />
+                    Saving enabled
+                  </>
+                ) : (
+                  <>
+                    <ShieldCheckIcon className="h-4 w-4 text-red-600" />
+                    Temporary session
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-6">
+              <Dropzone {...dropzone}>
+                <div>
+                  <div className="mb-3 flex flex-col gap-2 text-sm text-gray-600 sm:flex-row sm:items-center sm:justify-between">
+                    <DropzoneDescription>
+                      Upload your Netflix viewing history CSV
+                    </DropzoneDescription>
+                    <DropzoneMessage />
                   </div>
-                </DropzoneFileListItem>
-              ))}
-            </DropzoneFileList>
-          )}
-        </Dropzone>
+                  <DropZoneArea>
+                    <DropzoneTrigger className="flex min-h-64 w-full flex-col items-center justify-center gap-5 rounded-lg border-2 border-dashed border-gray-300 bg-[#faf8f5] p-8 text-center text-sm transition hover:border-red-300 hover:bg-red-50/40">
+                      <span className="flex h-16 w-16 items-center justify-center rounded-full bg-white shadow-sm">
+                        <CloudUploadIcon className="h-8 w-8 text-red-600" />
+                      </span>
+                      <div>
+                        <p className="text-lg font-bold text-gray-950">
+                          Drop ViewingActivity.csv here
+                        </p>
+                        <p className="mt-2 text-sm text-gray-600">
+                          Or click to browse. CSV only, up to 5 MB.
+                        </p>
+                      </div>
+                    </DropzoneTrigger>
+                  </DropZoneArea>
+                </div>
+                {dropzone.fileStatuses.length > 0 && (
+                  <DropzoneFileList className="mt-4">
+                    {dropzone.fileStatuses.map((file) => (
+                      <DropzoneFileListItem
+                        key={file.id}
+                        file={file}
+                        className="mb-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-3"
+                      >
+                        <div className="flex items-center justify-between gap-4">
+                          <div className="flex min-w-0 items-center gap-3">
+                            <FileSpreadsheetIcon className="h-5 w-5 shrink-0 text-red-600" />
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-semibold text-gray-800">
+                                {file.fileName}
+                              </p>
+                              <p className="text-xs text-gray-500">
+                                {(file.file.size / (1024 * 1024)).toFixed(2)} MB
+                              </p>
+                            </div>
+                          </div>
+                          <DropzoneRemoveFile className="rounded-md bg-white p-2">
+                            <Trash2Icon className="h-4 w-4 text-red-500 transition hover:text-red-700" />
+                          </DropzoneRemoveFile>
+                        </div>
+                      </DropzoneFileListItem>
+                    ))}
+                  </DropzoneFileList>
+                )}
+              </Dropzone>
 
-        {/* Processing Status */}
-        {/* {backgroundProcessing && (
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-            <div className="flex items-center">
-              <Loader2Icon className="animate-spin h-5 w-5 text-blue-500 mr-2" />
-              <div>
-                <p className="text-sm font-medium text-blue-800">
-                  Background Processing
-                </p>
-                <p className="text-xs text-blue-600">{processingStatus}</p>
+              {(backgroundProcessing || processingStatus) && (
+                <div className="grid gap-3">
+                  {processingStatus && (
+                    <div className="rounded-md border border-blue-200 bg-blue-50 p-4">
+                      <div className="flex gap-3">
+                        {backgroundProcessing ? (
+                          <Loader2Icon className="mt-0.5 h-5 w-5 animate-spin text-blue-600" />
+                        ) : (
+                          <CheckCircle2Icon className="mt-0.5 h-5 w-5 text-blue-600" />
+                        )}
+                        <div>
+                          <p className="text-sm font-bold text-blue-950">
+                            Upload status
+                          </p>
+                          <p className="mt-1 text-xs leading-5 text-blue-700">
+                            {processingStatus}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="rounded-md border border-gray-200 bg-gray-50 p-4 text-sm leading-6 text-gray-600">
+                After upload, Statistics opens automatically. Choose a profile there and the latest available year will generate first.
               </div>
             </div>
           </div>
-        )} */}
 
-        {/* Priority Processing Status */}
-        {priorityProcessing && (
-          <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
-            <div className="flex items-center">
-              <ZapIcon className="h-5 w-5 text-orange-500 mr-2" />
-              <div>
-                <p className="text-sm font-medium text-orange-800">
-                  ⚡ Priority Processing
-                </p>
-                <p className="text-xs text-orange-600">
-                  Processing...
-                </p>
+          <aside className="space-y-6">
+            <div className="rounded-lg border border-gray-200 bg-gray-950 p-5 text-white shadow-sm sm:p-6">
+              <p className="text-sm font-semibold text-red-300">Detected after upload</p>
+              <div className="mt-5 grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-3xl font-bold">{profileCount}</p>
+                  <p className="mt-1 text-sm text-gray-300">Profiles</p>
+                </div>
+                <div>
+                  <p className="text-3xl font-bold">{yearCount}</p>
+                  <p className="mt-1 text-sm text-gray-300">Years</p>
+                </div>
+              </div>
+              <p className="mt-5 text-sm leading-6 text-gray-300">
+                Upload a CSV here, then choose a profile in Statistics. Years become available as processing finishes.
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm sm:p-6">
+              <h2 className="text-lg font-bold text-gray-950">What this page does</h2>
+              <div className="mt-5 space-y-5">
+                {supportItems.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <div key={item.title} className="flex gap-3">
+                      <Icon className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
+                      <div>
+                        <p className="text-sm font-bold text-gray-900">{item.title}</p>
+                        <p className="mt-1 text-sm leading-6 text-gray-600">
+                          {item.description}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
-          </div>
-        )}
-
-        {availableUsers.length > 0 && (
-          <div>
-            <label className="block mb-1 text-sm font-medium text-gray-700">
-              Profile
-            </label>
-            <select
-              value={selectedUser}
-              onChange={(e) => setSelectedUser(e.target.value)}
-              className="w-full p-2 rounded text-gray-900 border border-gray-300 focus:outline-none focus:ring-2 focus:ring-red-600"
-            >
-              <option value="">Select profile</option>
-              {availableUsers.map((user) => (
-                <option key={user} value={user}>
-                  {user}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        {availableYears.length > 0 && (
-          <div>
-            <label className="block mb-1 text-sm font-medium text-gray-700">
-              Year
-            </label>
-            <select
-              value={selectedYear}
-              onChange={(e) => setSelectedYear(e.target.value)}
-              className="w-full p-2 rounded text-gray-900 border border-gray-300 focus:outline-none focus:ring-2 focus:ring-red-600"
-            >
-              <option value="">Select year</option>
-              {availableYears.map((year) => (
-                <option key={year} value={year}>
-                  {year}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        <button
-          onClick={handleSubmit}
-          disabled={loading || !selectedUser || !selectedYear}
-          className="w-full bg-red-600 hover:bg-red-700 transition text-white font-semibold py-2 px-4 rounded disabled:opacity-50 flex items-center justify-center"
-        >
-          {loading ? (
-            priorityProcessing ? (
-              <>
-                <ZapIcon className="h-4 w-4 mr-2" />
-                Priority Processing...
-              </>
-            ) : (
-              <>
-                <Loader2Icon className="animate-spin h-4 w-4 mr-2" />
-                Getting Data...
-              </>
-            )
-          ) : (
-            <>
-              <ZapIcon className="h-4 w-4 mr-2" />
-              Get Started
-            </>
-          )}
-        </button>
+          </aside>
+        </section>
       </div>
       <ToastContainer />
-    </div>
+    </main>
   );
 }

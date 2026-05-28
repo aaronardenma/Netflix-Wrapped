@@ -3,27 +3,157 @@ from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework import status
 import pandas as pd
-from django.utils import timezone
-from django.db import transaction
 from utils.csv_utils import validate_csv
-from utils.data_analysis import getJsonGraphData
+from utils.data_analysis import getJsonGraphData, getProfileComparisonData
 from api.serializers import UploadCSVSerializer
 from ..utils import validate_csv_columns
-from ..models import ViewingStat
+from ..models import NetflixProfile, ViewingEvent
+from ..services.viewing_ingestion import ingest_viewing_dataframe
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny
 from ..authentication import JWTCookieAuthentication
 from collections import defaultdict
 import threading
 import uuid
 from django.core.cache import cache
 import json
-import time
+import hashlib
 
 
 # Global dictionary to track background threads
 background_threads = {}
 priority_locks = {}  # To coordinate priority processing
-priority_processing = {}  # Track active priority processing jobs: {(user_id, profile, year): job_id}
+priority_processing = {}  # Track active priority processing jobs: {(owner_key, profile, year): job_id}
+
+
+def get_authenticated_user(request):
+    user = getattr(request, "user", None)
+    if user and user.is_authenticated:
+        return user
+    return None
+
+
+def get_owner_key(user_obj, job_id):
+    if user_obj:
+        return f"user:{user_obj.id}"
+    return f"anonymous:{job_id}"
+
+
+def get_csv_cache_key(owner_key, job_id):
+    return f"csv_data_{owner_key}_{job_id}"
+
+
+def get_result_cache_key(owner_key, profile_name, year):
+    profile_hash = hashlib.sha256(str(profile_name).encode("utf-8")).hexdigest()[:16]
+    year_key = "all" if is_all_years(year) else str(int(year))
+    return f"processed_data_{owner_key}_{profile_hash}_{year_key}"
+
+
+def is_all_years(year):
+    return str(year).lower() == "all"
+
+
+def get_display_year(year):
+    return "all" if is_all_years(year) else int(year)
+
+
+def get_processing_state_key(job_id):
+    return f"processing_state_{job_id}"
+
+
+def create_processing_state(profile_years_map, status_value="queued"):
+    profiles = {}
+    for profile_name, years in profile_years_map.items():
+        profiles[profile_name] = {
+            str(year): status_value for year in sorted(years, reverse=True)
+        }
+    return {
+        "status": "running",
+        "profile_years": {
+            profile_name: sorted(years, reverse=True)
+            for profile_name, years in profile_years_map.items()
+        },
+        "profiles": profiles,
+        "selected_profile": None,
+    }
+
+
+def get_processing_state(job_id):
+    return cache.get(get_processing_state_key(job_id))
+
+
+def set_processing_state(job_id, state, timeout=3600):
+    cache.set(get_processing_state_key(job_id), state, timeout=timeout)
+
+
+def update_processing_state(job_id, profile_name=None, year=None, year_status=None, job_status=None, selected_profile=None):
+    state = get_processing_state(job_id) or {}
+    if job_status:
+        state["status"] = job_status
+    if selected_profile is not None:
+        state["selected_profile"] = selected_profile
+    if profile_name is not None and year is not None and year_status:
+        profiles = state.setdefault("profiles", {})
+        profile_state = profiles.setdefault(profile_name, {})
+        profile_state[str(year)] = year_status
+    set_processing_state(job_id, state)
+    return state
+
+
+def get_ready_profile_years(state):
+    ready = {}
+    for profile_name, years in (state or {}).get("profiles", {}).items():
+        ready_years = [
+            int(year)
+            for year, year_status in years.items()
+            if year_status == "ready"
+        ]
+        if ready_years:
+            ready[profile_name] = sorted(ready_years, reverse=True)
+    return ready
+
+
+def seconds_to_duration_string(seconds):
+    seconds = int(seconds or 0)
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    remaining_seconds = seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{remaining_seconds:02d}"
+
+
+def get_event_rows_from_events(events):
+    event_rows = []
+    for event in events.select_related("profile").order_by("started_at"):
+        event_rows.append({
+            "Profile Name": event.profile.name,
+            "Start Time": event.started_at,
+            "Duration": seconds_to_duration_string(event.duration_seconds),
+            "Attributes": "",
+            "Title": event.title_raw,
+            "Supplemental Video Type": event.supplemental_video_type or None,
+            "Device Type": event.device_type,
+            "Bookmark": "",
+            "Latest Bookmark": "",
+            "Country": event.country,
+        })
+    return event_rows
+
+
+def get_graph_data_from_events(events, profile_name, year):
+    return getJsonGraphData(pd.DataFrame(get_event_rows_from_events(events)), profile_name, get_display_year(year))
+
+
+def get_profile_comparisons(user, profile_name, year):
+    year_events = ViewingEvent.objects.filter(profile__user=user)
+    if not is_all_years(year):
+        year_events = year_events.filter(started_at__year=int(year))
+    if not year_events.exists():
+        return {}
+    return getProfileComparisonData(
+        pd.DataFrame(get_event_rows_from_events(year_events)),
+        profile_name,
+        get_display_year(year),
+    )
 
 
 class QuickExtractCSVView(APIView):
@@ -33,7 +163,7 @@ class QuickExtractCSVView(APIView):
     """
     parser_classes = [MultiPartParser, FormParser]
     authentication_classes = [JWTCookieAuthentication]
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     @validate_csv_columns
     def post(self, request, format=None):
@@ -44,12 +174,18 @@ class QuickExtractCSVView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         file = serializer.validated_data['file']
-        user_obj = request.user
+        user_obj = get_authenticated_user(request)
 
         try:
             # Quick validation and profile/year extraction
             df = validate_csv(file)
             print(f"CSV validated. Total rows: {len(df)}")
+            if user_obj:
+                ingest_viewing_dataframe(
+                    user_obj,
+                    df,
+                    source_filename=getattr(file, "name", ""),
+                )
 
             # Quick extraction of profile/year combinations
             df['parsed_start_time'] = pd.to_datetime(df["Start Time"], errors="coerce")
@@ -69,13 +205,15 @@ class QuickExtractCSVView(APIView):
 
             # Store CSV data for both background and priority processing
             job_id = str(uuid.uuid4())
-            cache_key = f"csv_data_{user_obj.id}_{job_id}"
+            owner_key = get_owner_key(user_obj, job_id)
+            cache_key = get_csv_cache_key(owner_key, job_id)
             
             # Ensure all data is JSON serializable
             csv_data = {
                 'dataframe_json': df.to_json(orient='records'),
                 'profile_years_map': profile_years_map,
-                'user_id': str(user_obj.id),  # Convert to string upfront
+                'user_id': str(user_obj.id) if user_obj else None,
+                'owner_key': owner_key,
                 'job_id': job_id  # Already a string
             }
             
@@ -86,7 +224,7 @@ class QuickExtractCSVView(APIView):
             except TypeError as e:
                 print(f"JSON serialization error: {e}")
                 print(f"CSV data keys: {csv_data.keys()}")
-                print(f"User ID type: {type(user_obj.id)}")
+                print(f"User ID type: {type(user_obj.id) if user_obj else None}")
                 print(f"Job ID type: {type(job_id)}")
                 # Debug: try to identify what's not serializable
                 for key, value in csv_data.items():
@@ -99,11 +237,43 @@ class QuickExtractCSVView(APIView):
 
             # Initialize coordination objects
             priority_locks[job_id] = threading.Event()
+            priority_locks[job_id].set()
+            processing_state = create_processing_state(
+                profile_years_map,
+                status_value="ready" if user_obj else "queued",
+            )
+
+            if user_obj:
+                processing_state["status"] = "completed"
+                set_processing_state(job_id, processing_state)
+                background_threads[job_id] = {
+                    'thread': None,
+                    'status': 'completed',
+                    'paused': False
+                }
+                cache.set(f"job_status_{job_id}", "completed", timeout=3600)
+                return Response({
+                    "message": "CSV uploaded successfully.",
+                    "profile_years": profile_years_map,
+                    "ready_profile_years": get_ready_profile_years(processing_state),
+                    "processing_state": processing_state,
+                    "job_id": job_id,
+                    "status": "completed",
+                    "is_persisted": True,
+                })
+
+            set_processing_state(job_id, processing_state)
             
             # Start background processing thread
             background_thread = threading.Thread(
                 target=self.process_all_data_in_background,
-                args=(cache_key, user_obj.id, job_id, profile_years_map),
+                args=(
+                    cache_key,
+                    user_obj.id if user_obj else None,
+                    job_id,
+                    profile_years_map,
+                    owner_key,
+                ),
                 daemon=True
             )
             background_threads[job_id] = {
@@ -116,8 +286,11 @@ class QuickExtractCSVView(APIView):
             return Response({
                 "message": "CSV uploaded successfully. Processing in background.",
                 "profile_years": profile_years_map,
+                "ready_profile_years": {},
+                "processing_state": processing_state,
                 "job_id": job_id,
-                "status": "processing"
+                "status": "processing",
+                "is_persisted": bool(user_obj),
             })
 
         except Exception as e:
@@ -126,7 +299,7 @@ class QuickExtractCSVView(APIView):
                 {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-    def process_all_data_in_background(self, cache_key, user_id, job_id, profile_years_map):
+    def process_all_data_in_background(self, cache_key, user_id, job_id, profile_years_map, owner_key):
         """
         Background processing that can be paused for priority requests
         Only processes combinations that haven't been uploaded after the year completion
@@ -146,12 +319,11 @@ class QuickExtractCSVView(APIView):
             df_json_str = csv_data['dataframe_json']
             df = pd.read_json(io.StringIO(df_json_str), orient='records')
             
-            from django.contrib.auth import get_user_model
-            User = get_user_model()
-            user_obj = User.objects.get(id=user_id)
-
-            # Get current date for year completion logic
-            current_date = timezone.now()
+            user_obj = None
+            if user_id:
+                from django.contrib.auth import get_user_model
+                User = get_user_model()
+                user_obj = User.objects.get(id=user_id)
 
             # Get all combinations to process
             all_combinations = []
@@ -163,43 +335,44 @@ class QuickExtractCSVView(APIView):
             combinations_to_process = []
             for profile_name, year in all_combinations:
                 should_process = self.should_process_combination(
-                    user_obj, profile_name, year, current_date
+                    user_obj, profile_name, year
                 )
                 if should_process:
                     combinations_to_process.append((profile_name, year))
                 else:
                     print(f"Skipping {profile_name} - {year} (year completed and data already uploaded after year end)")
 
-            total_combinations = len(combinations_to_process)
+            pending_combinations = set(combinations_to_process)
             processed = 0
 
-            print(f"Processing {total_combinations} out of {len(all_combinations)} total combinations")
+            print(f"Processing {len(pending_combinations)} out of {len(all_combinations)} total combinations")
 
-            for profile_name, year in combinations_to_process:
+            while pending_combinations:
                 # Check if we need to pause for priority processing
                 priority_event = priority_locks.get(job_id)
                 if priority_event:
                     priority_event.wait()  # Wait if priority processing is happening
 
-                # Double-check if this combination was already processed by priority request
-                # during our processing (race condition protection)
-                existing = ViewingStat.objects.filter(
-                    user=user_obj,
-                    profile_name=profile_name,
-                    year=year
-                ).first()
-                
-                if existing:
-                    # Check if this was processed after we started (by priority request)
-                    if existing.uploaded_at > current_date:
-                        processed += 1
-                        print(f"Skipping {profile_name} - {year} (processed by priority request during background processing)")
-                        continue
-                    # If it exists from before, we still want to update it with new data
-                    print(f"Updating existing data for {profile_name} - {year}")
+                state = get_processing_state(job_id) or {}
+                selected_profile = state.get("selected_profile")
+                ordered_combinations = sorted(
+                    pending_combinations,
+                    key=lambda combo: (
+                        0 if selected_profile and combo[0] == selected_profile else 1,
+                        -int(combo[1]),
+                        combo[0].lower(),
+                    ),
+                )
+                profile_name, year = ordered_combinations[0]
+                pending_combinations.remove((profile_name, year))
+
+                if cache.get(get_result_cache_key(owner_key, profile_name, year)):
+                    update_processing_state(job_id, profile_name, year, "ready")
+                    continue
 
                 processed += 1
-                print(f"Background processing {profile_name} - {year} ({processed}/{total_combinations})")
+                update_processing_state(job_id, profile_name, year, "processing")
+                print(f"Background processing {profile_name} - {year} ({processed}/{len(combinations_to_process)})")
                 
                 try:
                     # Process this combination
@@ -209,28 +382,24 @@ class QuickExtractCSVView(APIView):
                     if len(profile_year_df) > 0:
                         graph_data = getJsonGraphData(profile_year_df, profile_name, year)
                         
-                        # Update existing or create new
-                        viewing_stat, created = ViewingStat.objects.update_or_create(
-                            user=user_obj,
-                            profile_name=profile_name,
-                            year=int(year),
-                            defaults={
-                                'data': graph_data,
-                                'uploaded_at': timezone.now()
-                            }
+                        cache.set(
+                            get_result_cache_key(owner_key, profile_name, year),
+                            graph_data,
+                            timeout=3600,
                         )
-                        
-                        action = "Created" if created else "Updated"
-                        print(f"{action} ViewingStat for {profile_name} - {year}")
+                        print(f"Cached anonymous result for {profile_name} - {year}")
+                        update_processing_state(job_id, profile_name, year, "ready")
                             
                 except Exception as e:
                     print(f"Error processing {profile_name} - {year}: {str(e)}")
+                    update_processing_state(job_id, profile_name, year, "error")
                     continue
 
             # Mark as completed
             if job_id in background_threads:
                 background_threads[job_id]['status'] = 'completed'
             cache.set(f"job_status_{job_id}", "completed", timeout=3600)
+            update_processing_state(job_id, job_status="completed")
             print(f"Background processing completed for job {job_id}")
             
             # Cleanup
@@ -243,45 +412,26 @@ class QuickExtractCSVView(APIView):
             if job_id in background_threads:
                 background_threads[job_id]['status'] = 'error'
             cache.set(f"job_status_{job_id}", f"error: {str(e)}", timeout=3600)
+            update_processing_state(job_id, job_status="error")
 
-    def should_process_combination(self, user_obj, profile_name, year, current_date):
+    def should_process_combination(self, user_obj, profile_name, year):
         """
-        Determine if a profile/year combination should be processed based on:
-        1. If the viewing year is not yet completed (current year or future), always process
-        2. If the viewing year is completed, only process if:
-        - No existing data exists, OR
-        - Existing data was uploaded before the viewing year ended
+        Anonymous jobs need cached graph data. Authenticated uploads are served
+        from normalized ViewingEvent rows and only need processing if no events exist.
         """
         viewing_year = int(year)
-        current_year = current_date.year
-        
-        # If the viewing year is not yet completed (current year or future), always process
-        if viewing_year >= current_year:
+
+        if not user_obj:
             return True
-        
-        # Viewing year is completed (past year)
-        # Check if we have existing data for this combination
-        existing = ViewingStat.objects.filter(
-            user=user_obj,
-            profile_name=profile_name,
-            year=viewing_year
-        ).first()
-        
-        if not existing:
-            # No existing data, so process it
+
+        profile = NetflixProfile.objects.filter(user=user_obj, name=profile_name).first()
+        if not profile:
             return True
-        
-        # We have existing data, check when it was uploaded
-        viewing_year_end_date = timezone.datetime(
-            viewing_year + 1, 1, 1, tzinfo=timezone.get_current_timezone()
-        )
-        
-        # If the existing data was uploaded after the viewing year ended, don't reprocess
-        if existing.uploaded_at >= viewing_year_end_date:
-            return False
-        
-        # If the existing data was uploaded before/during the viewing year, reprocess with new data
-        return True
+
+        return not ViewingEvent.objects.filter(
+            profile=profile,
+            started_at__year=viewing_year
+        ).exists()
 
 
 class PriorityProcessView(APIView):
@@ -289,13 +439,18 @@ class PriorityProcessView(APIView):
     Process a specific user/year combination with priority
     """
     authentication_classes = [JWTCookieAuthentication]
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     def post(self, request, format=None):
-        user_obj = request.user
+        user_obj = get_authenticated_user(request)
         profile_name = request.data.get('user')
         year = request.data.get('year')
         job_id = request.data.get('job_id')
+        owner_key = get_owner_key(user_obj, job_id)
+        if job_id and profile_name:
+            update_processing_state(job_id, selected_profile=profile_name)
+        if job_id and profile_name:
+            update_processing_state(job_id, selected_profile=profile_name)
 
         if not profile_name or not year:
             return Response(
@@ -305,16 +460,29 @@ class PriorityProcessView(APIView):
 
         try:
             # First check if data already exists
-            existing_stat = ViewingStat.objects.filter(
-                user=user_obj,
-                profile_name=profile_name,
-                year=year
-            ).first()
+            if user_obj:
+                profile = NetflixProfile.objects.filter(user=user_obj, name=profile_name).first()
+                if profile:
+                    events = ViewingEvent.objects.filter(profile=profile)
+                    if not is_all_years(year):
+                        events = events.filter(started_at__year=int(year))
+                    if events.exists():
+                        graph_data = get_graph_data_from_events(events, profile_name, year)
+                        graph_data["profile_comparisons"] = get_profile_comparisons(
+                            user_obj,
+                            profile_name,
+                            year,
+                        )
+                        return Response({
+                            "status": "ready",
+                            "data": graph_data
+                        })
 
-            if existing_stat:
+            cached_result = cache.get(get_result_cache_key(owner_key, profile_name, year))
+            if cached_result:
                 return Response({
                     "status": "ready",
-                    "data": existing_stat.data
+                    "data": cached_result
                 })
 
             # If not ready, process with priority
@@ -325,16 +493,19 @@ class PriorityProcessView(APIView):
                 
                 try:
                     # Process this specific combination immediately
+                    update_processing_state(job_id, profile_name, year, "processing")
                     result = self.process_priority_combination(
-                        user_obj, profile_name, year, job_id
+                        user_obj, profile_name, year, job_id, owner_key
                     )
                     
                     if result['status'] == 'success':
+                        update_processing_state(job_id, profile_name, year, "ready")
                         return Response({
                             "status": "ready",
                             "data": result['data']
                         })
                     else:
+                        update_processing_state(job_id, profile_name, year, "error")
                         return Response({
                             "status": "error",
                             "message": result['error']
@@ -355,13 +526,13 @@ class PriorityProcessView(APIView):
                 {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-    def process_priority_combination(self, user_obj, profile_name, year, job_id):
+    def process_priority_combination(self, user_obj, profile_name, year, job_id, owner_key):
         """
         Process a specific profile/year combination immediately
         """
         try:
             # Get cached data
-            cache_key = f"csv_data_{user_obj.id}_{job_id}"
+            cache_key = get_csv_cache_key(owner_key, job_id)
             cached_data = cache.get(cache_key)
             
             if not cached_data:
@@ -375,7 +546,9 @@ class PriorityProcessView(APIView):
             df = pd.read_json(io.StringIO(df_json_str), orient='records')
             
             # Filter for specific combination
-            profile_year_mask = (df['Profile Name'] == profile_name) & (df['year'] == int(year))
+            profile_year_mask = df['Profile Name'] == profile_name
+            if not is_all_years(year):
+                profile_year_mask = profile_year_mask & (df['year'] == int(year))
             profile_year_df = df[profile_year_mask].copy()
             
             if len(profile_year_df) == 0:
@@ -386,14 +559,12 @@ class PriorityProcessView(APIView):
             # Generate graph data
             graph_data = getJsonGraphData(profile_year_df, profile_name, year)
             
-            # Save to database
-            viewing_stat = ViewingStat.objects.create(
-                user=user_obj,
-                profile_name=profile_name,
-                year=int(year),
-                data=graph_data,
-                uploaded_at=timezone.now()
+            cache.set(
+                get_result_cache_key(owner_key, profile_name, year),
+                graph_data,
+                timeout=3600,
             )
+            update_processing_state(job_id, profile_name, year, "ready")
             
             return {'status': 'success', 'data': graph_data}
             
@@ -406,13 +577,14 @@ class GetDataView(APIView):
     Endpoint to get processed data - now with priority processing
     """
     authentication_classes = [JWTCookieAuthentication]
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     def post(self, request, format=None):
-        user_obj = request.user
+        user_obj = get_authenticated_user(request)
         profile_name = request.data.get('user')
         year = request.data.get('year')
         job_id = request.data.get('job_id')
+        owner_key = get_owner_key(user_obj, job_id)
 
         if not profile_name or not year:
             return Response(
@@ -422,24 +594,37 @@ class GetDataView(APIView):
 
         try:
             # Check if data is already processed
-            viewing_stat = ViewingStat.objects.filter(
-                user=user_obj,
-                profile_name=profile_name,
-                year=year
-            ).first()
+            if user_obj:
+                profile = NetflixProfile.objects.filter(user=user_obj, name=profile_name).first()
+                if profile:
+                    events = ViewingEvent.objects.filter(profile=profile)
+                    if not is_all_years(year):
+                        events = events.filter(started_at__year=int(year))
+                    if events.exists():
+                        graph_data = get_graph_data_from_events(events, profile_name, year)
+                        graph_data["profile_comparisons"] = get_profile_comparisons(
+                            user_obj,
+                            profile_name,
+                            year,
+                        )
+                        return Response({
+                            "status": "ready",
+                            "data": graph_data,
+                        })
 
-            if viewing_stat:
+            cached_result = cache.get(get_result_cache_key(owner_key, profile_name, year))
+            if cached_result:
                 return Response({
                     "status": "ready",
-                    "data": viewing_stat.data
+                    "data": cached_result
                 })
             else:
                 # Check if priority processing is already running for this combination
-                priority_key = (user_obj.id, profile_name, year)
+                priority_key = (owner_key, profile_name, year)
                 if priority_key in priority_processing:
                     return Response({
-                        "status": "priority_processing", 
-                        "message": f"Already processing {profile_name} - {year} with priority..."
+                        "status": "processing", 
+                        "message": f"Generating insights for {profile_name} - {year}..."
                     })
                 
                 # If not ready, trigger priority processing
@@ -450,14 +635,14 @@ class GetDataView(APIView):
                     # Call priority processing in a separate thread for immediate response
                     priority_thread = threading.Thread(
                         target=self.trigger_priority_processing,
-                        args=(user_obj, profile_name, year, job_id, priority_key),
+                        args=(user_obj, profile_name, year, job_id, priority_key, owner_key),
                         daemon=True
                     )
                     priority_thread.start()
                     
                     return Response({
-                        "status": "priority_processing",
-                        "message": f"Processing {profile_name} - {year} with priority..."
+                        "status": "processing",
+                        "message": f"Generating insights for {profile_name} - {year}..."
                     })
                 else:
                     return Response({
@@ -470,7 +655,7 @@ class GetDataView(APIView):
                 {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-    def trigger_priority_processing(self, user_obj, profile_name, year, job_id, priority_key):
+    def trigger_priority_processing(self, user_obj, profile_name, year, job_id, priority_key, owner_key):
         """
         Trigger priority processing in background
         """
@@ -485,7 +670,8 @@ class GetDataView(APIView):
             mock_request = MockRequest(user_obj, {
                 'user': profile_name,
                 'year': year,
-                'job_id': job_id
+                'job_id': job_id,
+                'owner_key': owner_key,
             })
             
             priority_view.post(mock_request)
@@ -500,7 +686,7 @@ class ProcessingStatusView(APIView):
     Endpoint to check the status of background processing
     """
     authentication_classes = [JWTCookieAuthentication]
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     def get(self, request, job_id, format=None):
         """
@@ -510,9 +696,14 @@ class ProcessingStatusView(APIView):
             # Check if job exists in background threads
             if job_id in background_threads:
                 thread_info = background_threads[job_id]
+                processing_state = get_processing_state(job_id)
                 status_info = {
                     'status': thread_info['status'],
-                    'job_id': job_id
+                    'job_id': job_id,
+                    'profile_years': (processing_state or {}).get('profile_years', {}),
+                    'profiles': (processing_state or {}).get('profiles', {}),
+                    'ready_profile_years': get_ready_profile_years(processing_state),
+                    'selected_profile': (processing_state or {}).get('selected_profile'),
                 }
                 
                 # Add more details based on status
@@ -531,19 +722,28 @@ class ProcessingStatusView(APIView):
             else:
                 # Check cache for status
                 cached_status = cache.get(f"job_status_{job_id}")
+                processing_state = get_processing_state(job_id)
                 if cached_status:
                     if cached_status == 'completed':
                         return Response({
                             'status': 'completed',
                             'job_id': job_id,
-                            'message': 'Processing completed'
+                            'message': 'Processing completed',
+                            'profile_years': (processing_state or {}).get('profile_years', {}),
+                            'profiles': (processing_state or {}).get('profiles', {}),
+                            'ready_profile_years': get_ready_profile_years(processing_state),
+                            'selected_profile': (processing_state or {}).get('selected_profile'),
                         })
                     elif cached_status.startswith('error:'):
                         return Response({
                             'status': 'error',
                             'job_id': job_id,
                             'message': 'Processing failed',
-                            'error': cached_status[6:]  # Remove 'error:' prefix
+                            'error': cached_status[6:],  # Remove 'error:' prefix
+                            'profile_years': (processing_state or {}).get('profile_years', {}),
+                            'profiles': (processing_state or {}).get('profiles', {}),
+                            'ready_profile_years': get_ready_profile_years(processing_state),
+                            'selected_profile': (processing_state or {}).get('selected_profile'),
                         })
                 
                 # Job not found
@@ -566,14 +766,17 @@ class StoredDataView(APIView):
     
     def get(self, request):
         user = request.user
-        # Get all ViewingStat records for this user
-        stats = ViewingStat.objects.filter(user=user).values('profile_name', 'year').distinct()
+        events = (
+            ViewingEvent.objects
+            .filter(profile__user=user)
+            .values("profile__name", "started_at__year")
+            .distinct()
+        )
         
-        # Group by profile_name
         data = {}
-        for stat in stats:
-            profile = stat['profile_name']
-            year = stat['year']
+        for event in events:
+            profile = event["profile__name"]
+            year = event["started_at__year"]
             if profile not in data:
                 data[profile] = []
             data[profile].append(year)
@@ -593,17 +796,28 @@ class GetStoredDataView(APIView):
         year = request.data.get('year')
         
         try:
-            viewing_stat = ViewingStat.objects.get(
-                user=user,
-                profile_name=profile_name,
-                year=year
-            )
-            return Response({
-                'status': 'ready',
-                'data': viewing_stat.data
-            })
-        except ViewingStat.DoesNotExist:
+            profile = NetflixProfile.objects.get(user=user, name=profile_name)
+            events = ViewingEvent.objects.filter(profile=profile)
+            if not is_all_years(year):
+                events = events.filter(started_at__year=int(year))
+            if events.exists():
+                graph_data = get_graph_data_from_events(events, profile_name, year)
+                graph_data["profile_comparisons"] = get_profile_comparisons(
+                    user,
+                    profile_name,
+                    year,
+                )
+                return Response({
+                    'status': 'ready',
+                    'data': graph_data
+                })
+        except NetflixProfile.DoesNotExist:
             return Response({
                 'status': 'not_found',
                 'message': 'Data not found'
             }, status=404)
+
+        return Response({
+            'status': 'not_found',
+            'message': 'Data not found'
+        }, status=404)

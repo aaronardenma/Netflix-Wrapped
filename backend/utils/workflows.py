@@ -13,6 +13,32 @@ csv_path = os.path.join(BASE_DIR, 'netflix_titles.csv')
 
 
 K_NETFLIX_TITLES = pd.read_csv(csv_path)
+K_NETFLIX_TITLES['normalized title'] = (
+    K_NETFLIX_TITLES['title']
+    .astype(str)
+    .str.strip()
+    .str.lower()
+    .apply(lambda value: value.translate(str.maketrans('', '', string.punctuation)))
+)
+K_TITLE_BY_NORMALIZED = (
+    K_NETFLIX_TITLES
+    .drop_duplicates('normalized title')
+    .set_index('normalized title')['title']
+    .to_dict()
+)
+K_TYPE_BY_TITLE = (
+    K_NETFLIX_TITLES
+    .drop_duplicates('title')
+    .set_index('title')['type']
+    .to_dict()
+)
+K_RATING_BY_TITLE = (
+    K_NETFLIX_TITLES
+    .drop_duplicates('title')
+    .set_index('title')['rating']
+    .fillna('Unknown')
+    .to_dict()
+)
 
 # Read in Personal Viewing Data & Kaggle Netflix Dataset
 def dataframeSetUp(df: pd.DataFrame) -> pd.DataFrame:
@@ -72,31 +98,8 @@ def convertDurationToHrs(df: pd.DataFrame) -> pd.DataFrame:
 def generateShowTitles(df: pd.DataFrame) -> pd.DataFrame:
     df['Title'] = df['Title'].astype(str)
     df['Title'] = df['Title'].str.strip()
-    titles = df['Title'].str.lower()
-
-    kaggleTitles = K_NETFLIX_TITLES['title'].str.strip()
-    kaggleTitles = K_NETFLIX_TITLES['title'].str.lower()
-
-    df['New Title'] = ""
-    df['New Title'] = df['New Title'].astype(str)
-    
-    df['preprocessed titles'] = titles.apply(preprocessTitles)
-    df['tokenized titles'] = df['preprocessed titles'].apply(lambda x: set(nltk.word_tokenize(x)))
-    K_NETFLIX_TITLES['preprocessed kaggle titles'] = kaggleTitles.apply(preprocessTitles)
-    K_NETFLIX_TITLES['tokenized kaggle titles'] = K_NETFLIX_TITLES['preprocessed kaggle titles'].apply(lambda x: set(nltk.word_tokenize(x)))
-
-    for index, row in K_NETFLIX_TITLES.iterrows():
-        kaggleTitle_tokens = set(row['tokenized kaggle titles'])
-        
-        # Find matches where all tokens from tokenized kaggle titles are in the tokenized titles
-        matches = df[df['tokenized titles'].apply(lambda x: kaggleTitle_tokens.issubset(x))]
-        
-        if not matches.empty:
-            for match_index, match_row in matches.iterrows():
-                # Check if the new title match is longer than the old one
-                if len(row['title']) > len(match_row['New Title']):
-                    df.loc[match_index, 'New Title'] = row['title']
-    df['New Title'] = df['New Title'].replace("", "Unknown")
+    normalized_titles = df['Title'].str.lower().apply(preprocessTitles)
+    df['New Title'] = normalized_titles.map(K_TITLE_BY_NORMALIZED).fillna(df['Title'])
 
     return df
 
@@ -107,46 +110,14 @@ def preprocessTitles(text: str) -> str:
 
 # Create new column for Netflix Media Types for content pieces
 def generateMediaType(df: pd.DataFrame) -> pd.DataFrame:
-    kaggleTitles = K_NETFLIX_TITLES['title']
-    kaggleTypes = K_NETFLIX_TITLES['type']
-
-    df['Type'] = ""
-    df['Type'] = df['Type'].astype(str)
-
-    for idx, kaggleTitle in enumerate(kaggleTitles):
-        # Normalize titles
-        kaggleTitle = kaggleTitle.strip()
-
-        # Partial matching
-        matches = df[df['New Title'] == kaggleTitle]
-        
-        # Assigning values
-        if (len(matches) > 0):
-            df.loc[matches.index, 'Type'] = kaggleTypes[idx]
-    df['Type'] = df['Type'].replace("", "Unknown")
+    df['Type'] = df['New Title'].map(K_TYPE_BY_TITLE).fillna("Unknown")
 
     return df
         
 
 # Get Rating Type
 def generateRatings(df: pd.DataFrame) -> pd.DataFrame:
-    kaggleTitles = K_NETFLIX_TITLES['title']
-    kaggleRatings = K_NETFLIX_TITLES['rating']
-
-    df['Rating'] = ""
-    df['Rating'] = df['Rating'].astype(str)
-
-    for idx, kaggleTitle in enumerate(kaggleTitles):
-        # Normalize titles
-        kaggleTitle = kaggleTitle.strip()
-
-        # Partial matching
-        matches = df[df['New Title'] == kaggleTitle]
-        
-        # Assigning values
-        if (len(matches) > 0):
-            df.loc[matches.index, 'Rating'] = kaggleRatings[idx]
-    df['Rating'] = df['Rating'].replace("", "Unknown")
+    df['Rating'] = df['New Title'].map(K_RATING_BY_TITLE).fillna("Unknown")
 
     return df
 

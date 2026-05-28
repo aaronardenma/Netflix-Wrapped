@@ -9,7 +9,6 @@ import Profiles from "./components/Profiles";
 import { useEffect } from "react";
 import { useDispatch } from "react-redux";
 import { bootstrapAuth } from "./store/authSlice";
-import Poster from "./components/test";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 const queryClient = new QueryClient();
@@ -33,7 +32,6 @@ function App() {
           <Route path="/auth/:type" element={<Auth />} />
           <Route path="/contact" element={<Contact />} />
           <Route path="/profiles" element={<Profiles />} />
-          <Route path="/test" element={<Poster />} />
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>

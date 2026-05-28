@@ -21,5 +21,3 @@ class JWTCookieAuthentication(JWTAuthentication):
             return (user, validated_token)
         except TokenError:
             return None
-
-# Or if you're using a different JWT library, adapt accordingly

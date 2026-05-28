@@ -4,17 +4,15 @@ import { getCookie } from '../../utils/cookies';
 
 // Create axios instance
 const apiClient = axios.create({
-  baseURL: 'http://127.0.0.1:8000',
+  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000',
   withCredentials: true, // Always send cookies
-  timeout: 10000, // 10 second timeout
+  timeout: 60000,
 });
 
-// Store auth context reference (will be set from AuthProvider)
-let authContextRef = null;
+let unauthorizedHandler = null;
 
-// Function to set auth context reference
-export const setAuthContext = (authContext) => {
-  authContextRef = authContext;
+export const setUnauthorizedHandler = (handler) => {
+  unauthorizedHandler = handler;
 };
 
 // Request interceptor - adds CSRF token to all requests
@@ -39,18 +37,21 @@ apiClient.interceptors.request.use(
 apiClient.interceptors.response.use(
   (response) => {
     // Any status code in 2xx range triggers this function
+    response.ok = response.status >= 200 && response.status < 300;
     return response;
   },
   (error) => {
     console.error('API Error:', error.response?.status, error.response?.data);
     
     // Handle authentication errors
-    if (error.response?.status === 401 || error.response?.status === 403) {
+    const isAuthEndpoint = error.config?.url?.includes('/api/auth/login/')
+      || error.config?.url?.includes('/api/auth/register/');
+
+    if (!isAuthEndpoint && (error.response?.status === 401 || error.response?.status === 403)) {
       console.log('Authentication error detected, logging out user...');
       
-      // Call the auth context's logout function
-      if (authContextRef && authContextRef.handleAuthError) {
-        authContextRef.handleAuthError();
+      if (unauthorizedHandler) {
+        unauthorizedHandler();
       }
       
       // Don't re-throw auth errors since they're handled globally

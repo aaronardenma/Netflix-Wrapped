@@ -23,6 +23,7 @@ defusedxml==0.7.1
 Django==5.2.4
 django-cors-headers==4.7.0
 djangorestframework==3.16.0
+djangorestframework-simplejwt==5.5.1
 docopt==0.6.2
 executing==2.0.1
 fastjsonschema==2.20.0
@@ -33,6 +34,7 @@ fonttools==4.49.0
 fuzzywuzzy==0.18.0
 gitdb==4.0.11
 GitPython==3.1.42
+gunicorn==23.0.0
 idna==3.4
 ipykernel==6.29.3
 ipython==8.12.3
@@ -84,6 +86,7 @@ Pygments==2.17.2
 pyparsing==3.1.2
 python-dateutil==2.8.2
 python-decouple==3.8
+python-dotenv==1.2.1
 python-Levenshtein==0.25.0
 pytz==2023.3.post1
 pyzmq==25.1.2

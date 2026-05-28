@@ -1,25 +1,28 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import { MdOutlineSsidChart } from "react-icons/md";
-import { useAuth } from "../contexts/AuthContext.jsx";
 import { MdOutlineLogout } from "react-icons/md";
 import { CgProfile } from "react-icons/cg";
+import { useDispatch, useSelector } from "react-redux";
+import { logoutUser, selectAuth } from "@/store/authSlice";
 
 
 export default function NavBar() {
-  const { isAuthenticated, user, loading, logout } = useAuth();
+  const { isAuthenticated, user, loading } = useSelector(selectAuth);
+  const dispatch = useDispatch();
   const nav = useNavigate()
   const items = [
-    { name: "Upload", path: "/upload" },
+    { name: "Generate", path: "/upload" },
     { name: "Statistics", path: "/statistics" },
   ];
   
 
   const handleLogout = async () => {
     try {
-      await logout();
+      await dispatch(logoutUser()).unwrap();
       nav("/")
     } catch (err) {
       console.error("Logout failed:", err);
+      nav("/")
     }
   };
 
@@ -38,7 +41,7 @@ export default function NavBar() {
         </NavLink>
       </div>
       <div className="flex items-center space-x-4">
-        {isAuthenticated && items.map((item) => (
+        {items.map((item) => (
           <NavLink
             key={item.name.toLowerCase()}
             to={{ pathname: item.path, search: "" }} // clear search params

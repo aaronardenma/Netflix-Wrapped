@@ -1,21 +1,30 @@
 // api/endpoints.js
-import apiClient from './apiClient';
+import apiClient from "./apiClient";
 
 // User/Auth related endpoints
 export const authAPI = {
   // Authentication endpoints
-  register: (userData) => apiClient.post('/api/auth/register/', userData),
-  login: (credentials) => apiClient.post('/api/auth/login/', credentials),
-  logout: () => apiClient.post('/api/auth/logout/'),
-  me: () => apiClient.get('/api/auth/me/'),
-  
+  register: (userData) => apiClient.post("/api/auth/register/", userData),
+  login: (credentials) => apiClient.post("/api/auth/login/", credentials),
+  logout: () => apiClient.post("/api/auth/logout/"),
+  me: () => apiClient.get("/api/auth/me/"),
+  requestPasswordReset: (email) =>
+    apiClient.post("/api/auth/password-reset/request/", { email }),
+  confirmPasswordReset: ({ uid, token, password }) =>
+    apiClient.post("/api/auth/password-reset/confirm/", {
+      uid,
+      token,
+      password,
+    }),
+
   // JWT Token endpoints (if needed for manual token management)
-  getToken: (credentials) => apiClient.post('/api/auth/token/', credentials),
-  refreshToken: (refreshToken) => apiClient.post('/api/auth/token/refresh/', { refresh: refreshToken }),
-  verifyToken: (token) => apiClient.post('/api/auth/token/verify/', { token }),
-  
+  getToken: (credentials) => apiClient.post("/api/auth/token/", credentials),
+  refreshToken: (refreshToken) =>
+    apiClient.post("/api/auth/token/refresh/", { refresh: refreshToken }),
+  verifyToken: (token) => apiClient.post("/api/auth/token/verify/", { token }),
+
   // CSRF token
-  getCSRF: () => apiClient.get('/api/csrf/'),
+  getCSRF: () => apiClient.get("/api/csrf/"),
 };
 
 // Netflix data processing endpoints
@@ -23,17 +32,17 @@ export const netflixAPI = {
   // Quick CSV upload and processing
   quickExtractCSV: (file) => {
     const formData = new FormData();
-    formData.append('file', file);
-    
-    return apiClient.post('/api/csv/quick-extract/', formData, {
+    formData.append("file", file);
+
+    return apiClient.post("/api/csv/quick-extract/", formData, {
       headers: {
-        'Content-Type': 'multipart/form-data',
+        "Content-Type": "multipart/form-data",
       },
     });
   },
 
   // Priority processing for specific profile/year
-  priorityProcess: (data) => apiClient.post('/api/priority-process/', data),
+  priorityProcess: (data) => apiClient.post("/api/priority-process/", data),
 
   // Get processed data for specific profile/year
   getData: (profileName, year, jobId = null) => {
@@ -44,20 +53,28 @@ export const netflixAPI = {
     if (jobId) {
       requestData.job_id = jobId;
     }
-    return apiClient.post('/api/get-data/', requestData);
+    return apiClient.post("/api/get-data/", requestData);
   },
 
   // Check processing status
-  getProcessingStatus: (jobId) => apiClient.get(`/api/processing-status/${jobId}/`),
+  getProcessingStatus: (jobId) =>
+    apiClient.get(`/api/processing-status/${jobId}/`),
 
   // Get all stored data (profile/year combinations)
-  getStoredData: () => apiClient.get('/api/stored-data/'),
+  getStoredData: () => apiClient.get("/api/stored-data/"),
 
   // Get specific stored data
-  getStoredDataByProfile: (profileName, year) => 
-    apiClient.post('/api/get-stored-data/', {
+  getStoredDataByProfile: (profileName, year) =>
+    apiClient.post("/api/get-stored-data/", {
       profile_name: profileName,
       year: year,
+    }),
+
+  getPosters: (title, year, type) =>
+    apiClient.post("/api/posters/", {
+      title: title,
+      year: year,
+      type: type,
     }),
 };
 
@@ -65,13 +82,13 @@ export const netflixAPI = {
 export const dataAPI = {
   // Upload and process Netflix CSV
   uploadNetflixCSV: netflixAPI.quickExtractCSV,
-  
+
   // Get viewing statistics for a profile/year
   getViewingStats: netflixAPI.getData,
-  
+
   // Get all available profile/year combinations
   getAvailableData: netflixAPI.getStoredData,
-  
+
   // Check if processing is complete
   checkProcessingStatus: netflixAPI.getProcessingStatus,
 };

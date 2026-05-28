@@ -1,5 +1,13 @@
 from django.contrib.auth import get_user_model
 from django.contrib.auth import authenticate
+from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth.tokens import default_token_generator
+from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.core.mail import send_mail
+from django.utils.encoding import force_bytes, force_str
+from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
+from smtplib import SMTPException
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
@@ -39,10 +47,10 @@ class LoginView(APIView):
         password = request.data.get("password")
 
         user = authenticate(request, username=email, password=password)
-        if user.is_staff:
-            return Response({"error": "Staff users cannot log in to this app."}, status=403)
-
         if user is not None:
+            if user.is_staff:
+                return Response({"error": "Staff users cannot log in to this app."}, status=403)
+
             refresh_token, access_token = get_tokens_for_user(user)
             response = Response({
                 "message": "Login successful",
@@ -57,8 +65,8 @@ class LoginView(APIView):
                 key="access_token",
                 value=access_token,
                 httponly=True,
-                secure=True,  # True for localhost/HTTP, True for production/HTTPS
-                samesite="None",  # Changed from "Strict" to "None"
+                secure=settings.SESSION_COOKIE_SECURE,
+                samesite=settings.SESSION_COOKIE_SAMESITE,
                 max_age=3600,  # 1 hour
                 path="/",  # ensure accessible on all backend routes
 
@@ -67,8 +75,8 @@ class LoginView(APIView):
                 key="refresh_token",
                 value=refresh_token,
                 httponly=True,
-                secure=True,  # True for localhost/HTTP
-                samesite="None",  # Changed from "Strict"
+                secure=settings.SESSION_COOKIE_SECURE,
+                samesite=settings.SESSION_COOKIE_SAMESITE,
                 max_age=7 * 24 * 3600,  # 7 days
                 path="/",  # ensure accessible on all backend routes
 
@@ -77,6 +85,89 @@ class LoginView(APIView):
             return response
         else:
             return Response({"error": "Invalid credentials"}, status=401)
+
+
+class PasswordResetRequestView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = request.data.get("email", "").strip()
+        generic_response = {
+            "message": "If an account exists for that email, a password reset link has been sent."
+        }
+
+        if not email:
+            return Response({"error": "Email required"}, status=400)
+
+        user = User.objects.filter(email__iexact=email, is_active=True).first()
+        if not user:
+            return Response(generic_response)
+
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = default_token_generator.make_token(user)
+        reset_url = f"{settings.FRONTEND_URL.rstrip('/')}/auth/reset-password/{uid}/{token}"
+
+        try:
+            send_mail(
+                subject="Reset your Netflix Wrapped password",
+                message=(
+                    "We received a request to reset your Netflix Wrapped password.\n\n"
+                    f"Use this link to choose a new password:\n{reset_url}\n\n"
+                    "If you did not request this, you can ignore this email."
+                ),
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                fail_silently=False,
+            )
+        except SMTPException:
+            return Response(
+                {"error": "Password reset email could not be sent. Check SMTP configuration."},
+                status=503,
+            )
+
+        return Response(generic_response)
+
+
+class PasswordResetConfirmView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        uid = request.data.get("uid")
+        token = request.data.get("token")
+        password = request.data.get("password")
+
+        if not uid or not token or not password:
+            return Response({"error": "UID, token, and password required"}, status=400)
+
+        try:
+            user_id = force_str(urlsafe_base64_decode(uid))
+            user = User.objects.get(pk=user_id, is_active=True)
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist, ValidationError):
+            return Response({"error": "Invalid or expired reset link"}, status=400)
+
+        if not default_token_generator.check_token(user, token):
+            return Response({"error": "Invalid or expired reset link"}, status=400)
+
+        try:
+            validate_password(password, user=user)
+        except ValidationError as exc:
+            return Response({"error": list(exc.messages)}, status=400)
+
+        user.set_password(password)
+        user.save(update_fields=["password"])
+
+        response = Response({"message": "Password reset successful"})
+        response.delete_cookie(
+            "access_token",
+            path="/",
+            samesite=settings.SESSION_COOKIE_SAMESITE
+        )
+        response.delete_cookie(
+            "refresh_token",
+            path="/",
+            samesite=settings.SESSION_COOKIE_SAMESITE
+        )
+        return response
 
 
         
@@ -125,16 +216,16 @@ class RegisterView(APIView):
             key="access_token",
             value=access_token,
             httponly=True,
-            secure=False,  # False for localhost, True for production
-            samesite="Lax",  # Changed from "None" to "Lax"
+            secure=settings.SESSION_COOKIE_SECURE,
+            samesite=settings.SESSION_COOKIE_SAMESITE,
             max_age=3600,
         )
         response.set_cookie(
             key="refresh_token",
             value=refresh_token,
             httponly=True,
-            secure=False,  # False for localhost
-            samesite="Lax",  # Changed from "None"
+            secure=settings.SESSION_COOKIE_SECURE,
+            samesite=settings.SESSION_COOKIE_SAMESITE,
             max_age=7 * 24 * 3600,
         )
 
@@ -161,15 +252,12 @@ class LogoutView(APIView):
         response.delete_cookie(
             "access_token",
             path="/",
-            samesite="None"
+            samesite=settings.SESSION_COOKIE_SAMESITE
         )
         response.delete_cookie(
             "refresh_token",
             path="/",
-            samesite="None"
+            samesite=settings.SESSION_COOKIE_SAMESITE
         )
 
         return response
-
-
-

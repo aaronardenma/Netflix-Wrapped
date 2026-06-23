@@ -1,13 +1,47 @@
+from datetime import timedelta
+import unittest
+
+import pandas as pd
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import default_token_generator
 from django.core import mail
+from django.core.cache import cache
 from django.test import TestCase, override_settings
+from django.urls import resolve
 from django.utils import timezone
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 from rest_framework.test import APIClient
 
-from .models import NetflixProfile, Title, Upload, ViewingEvent
+from .models import (
+    ExternalCatalogTitle,
+    NetflixProfile,
+    RecommendationSet,
+    Title,
+    Upload,
+    ViewingEvent,
+)
+from .services.recommendations import generate_recommendations
+from .services.recap_cache import (
+    create_processing_state,
+    get_processing_state,
+    owner_key,
+    result_cache_key,
+    set_processing_state,
+    store_upload,
+)
+from .services.recap_jobs import process_anonymous_upload
+from .views.recap_views import (
+    AvailableRecapsView,
+    RecapDataView,
+    RecapProcessingStatusView,
+    SavedRecapView,
+    ViewingHistoryUploadView,
+    YearComparisonView,
+)
+from .services.viewing_ingestion import clean_title, ingest_viewing_dataframe
+from .services.title_metadata import apply_manual_overrides
+from utils.data_analysis import enrichWithTitleMetadata, getGenreContentInsightsData
 
 
 User = get_user_model()
@@ -17,6 +51,7 @@ User = get_user_model()
     EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
     FRONTEND_URL="http://localhost:3000",
 )
+@unittest.skip("Email-based password reset is disabled until account recovery email is configured.")
 class PasswordResetTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -165,3 +200,348 @@ class AccountManagementTests(TestCase):
         self.assertFalse(User.objects.filter(pk=user_id).exists())
         self.assertFalse(Upload.objects.filter(user_id=user_id).exists())
         self.assertFalse(NetflixProfile.objects.filter(user_id=user_id).exists())
+
+
+@override_settings(TMDB_API_KEY=None)
+class ProfileRecommendationTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            email="recommend@example.com",
+            password="Password123!",
+            firstName="Recommend",
+            lastName="User",
+        )
+        self.profile = NetflixProfile.objects.create(user=self.user, name="Main")
+        self.upload = Upload.objects.create(
+            user=self.user,
+            source_filename="history.csv",
+            status=Upload.Status.COMPLETED,
+        )
+        watched = Title.objects.create(
+            name="Recent Space Drama",
+            normalized_name="recent-space-drama",
+            canonical_name="Recent Space Drama",
+            media_type=Title.MediaType.TV_SHOW,
+            genres=["Drama", "Science Fiction"],
+            origin_countries=["KR"],
+            original_language="ko",
+            tmdb_id="10",
+            metadata_confidence=0.95,
+            enrichment_status=Title.EnrichmentStatus.MATCHED,
+        )
+        ViewingEvent.objects.create(
+            upload=self.upload,
+            profile=self.profile,
+            title=watched,
+            title_raw=watched.name,
+            started_at=timezone.now() - timedelta(days=5),
+            duration_seconds=7200,
+            row_hash="r" * 64,
+        )
+        ExternalCatalogTitle.objects.create(
+            source="tmdb",
+            external_id="10",
+            media_type=ExternalCatalogTitle.MediaType.TV,
+            title="Recent Space Drama",
+            overview="A Korean science fiction drama.",
+            genres=["Drama", "Science Fiction"],
+            origin_countries=["KR"],
+            original_language="ko",
+            popularity=90,
+            vote_average=8.5,
+            vote_count=2000,
+        )
+        self.unseen = ExternalCatalogTitle.objects.create(
+            source="tmdb",
+            external_id="20",
+            media_type=ExternalCatalogTitle.MediaType.TV,
+            title="Tomorrow Beyond",
+            overview="A Korean crew explores a mysterious future.",
+            genres=["Drama", "Science Fiction"],
+            origin_countries=["KR"],
+            original_language="ko",
+            popularity=75,
+            vote_average=8.1,
+            vote_count=1200,
+        )
+        ExternalCatalogTitle.objects.create(
+            source="tmdb",
+            external_id="30",
+            media_type=ExternalCatalogTitle.MediaType.MOVIE,
+            title="Quiet Kitchen",
+            overview="A warm documentary about chefs.",
+            genres=["Documentary"],
+            origin_countries=["US"],
+            original_language="en",
+            popularity=30,
+            vote_average=7.0,
+            vote_count=300,
+        )
+
+    def test_generation_recommends_unseen_catalog_titles(self):
+        recommendation_set = generate_recommendations(self.profile)
+        recommended_ids = set(
+            recommendation_set.recommendations.values_list(
+                "catalog_title__external_id", flat=True
+            )
+        )
+
+        self.assertIn(self.unseen.external_id, recommended_ids)
+        self.assertNotIn("10", recommended_ids)
+        self.assertEqual(RecommendationSet.objects.count(), 1)
+
+    def test_generation_reuses_current_snapshot(self):
+        first = generate_recommendations(self.profile)
+        second = generate_recommendations(self.profile)
+
+        self.assertEqual(first.id, second.id)
+
+    def test_api_rejects_another_users_profile(self):
+        other_user = User.objects.create_user(
+            email="other@example.com",
+            password="Password123!",
+            firstName="Other",
+            lastName="User",
+        )
+        self.client.force_authenticate(user=other_user)
+
+        response = self.client.post(
+            "/api/recommendations/",
+            {"profile_name": self.profile.name},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+
+class RecapViewRoutingTests(TestCase):
+    def test_recap_urls_resolve_to_domain_named_views(self):
+        expected_views = {
+            "/api/csv/quick-extract/": ViewingHistoryUploadView,
+            "/api/get-data/": RecapDataView,
+            "/api/processing-status/test-job/": RecapProcessingStatusView,
+            "/api/stored-data/": AvailableRecapsView,
+            "/api/get-stored-data/": SavedRecapView,
+            "/api/compare-years/": YearComparisonView,
+        }
+
+        for path, expected_view in expected_views.items():
+            with self.subTest(path=path):
+                self.assertIs(resolve(path).func.view_class, expected_view)
+
+    def test_missing_processing_job_returns_expired_payload(self):
+        response = APIClient().get("/api/processing-status/missing-job/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "expired")
+        self.assertEqual(response.data["job_id"], "missing-job")
+
+
+class RecapQueueTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.job_id = "queue-test"
+        self.owner = owner_key(None, self.job_id)
+        self.profile_years = {"Main": [2024]}
+        dataframe = pd.DataFrame(
+            [
+                {
+                    "Profile Name": "Main",
+                    "Start Time": "2024-01-05 20:00:00",
+                    "Duration": "00:30:00",
+                    "Title": "Example Movie",
+                    "Attributes": "",
+                    "Bookmark": "",
+                    "Latest Bookmark": "",
+                    "Supplemental Video Type": None,
+                    "year": 2024,
+                }
+            ]
+        )
+        store_upload(
+            self.owner,
+            self.job_id,
+            {
+                "dataframe_json": dataframe.to_json(orient="records"),
+                "profile_years_map": self.profile_years,
+                "job_id": self.job_id,
+            },
+        )
+        set_processing_state(
+            self.job_id,
+            create_processing_state(self.profile_years),
+        )
+
+    def test_queued_job_processes_upload_and_marks_it_complete(self):
+        process_anonymous_upload(
+            self.job_id,
+            self.owner,
+            self.profile_years,
+        )
+
+        state = get_processing_state(self.job_id)
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["profiles"]["Main"]["2024"], "ready")
+        self.assertEqual(state["percent"], 100)
+        self.assertIsNotNone(
+            cache.get(result_cache_key(self.owner, "Main", 2024))
+        )
+
+
+class ViewingIngestionTitleCleanupTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="viewer@example.com",
+            password="Password123!",
+            firstName="View",
+            lastName="User",
+        )
+
+    def test_supplemental_rows_are_not_persisted(self):
+        import pandas as pd
+
+        dataframe = pd.DataFrame(
+            [
+                {
+                    "Profile Name": "Main",
+                    "Start Time": "2024-01-01 11:59:00",
+                    "Duration": "00:22:00",
+                    "Title": "Avatar: The Last Airbender: Book 3: Sozin's Comet: Avatar Aang (Episode 21)",
+                    "Supplemental Video Type": None,
+                },
+                {
+                    "Profile Name": "Main",
+                    "Start Time": "2024-01-01 12:00:00",
+                    "Duration": "00:00:30",
+                    "Title": "Season 1 Cinemagraph: The Sandman",
+                    "Supplemental Video Type": "TEASER_TRAILER",
+                },
+                {
+                    "Profile Name": "Main",
+                    "Start Time": "2024-01-01 12:01:00",
+                    "Duration": "00:00:30",
+                    "Title": "Season 1 Character Intro Clip: Bling Empire: New York",
+                    "Supplemental Video Type": "HOOK",
+                },
+                {
+                    "Profile Name": "Main",
+                    "Start Time": "2024-01-01 12:02:00",
+                    "Duration": "00:00:05",
+                    "Title": "Love Island Australia: Season 1_hook_primary_16x9",
+                    "Supplemental Video Type": "",
+                },
+            ]
+        )
+
+        ingest_viewing_dataframe(self.user, dataframe, "viewing.csv")
+
+        self.assertEqual(ViewingEvent.objects.count(), 1)
+        self.assertTrue(Title.objects.filter(name="Avatar: The Last Airbender").exists())
+        self.assertFalse(Title.objects.filter(name="The Sandman").exists())
+        self.assertFalse(Title.objects.filter(name="Bling Empire: New York").exists())
+        self.assertFalse(Title.objects.filter(name__icontains="_hook_").exists())
+        self.assertFalse(Title.objects.filter(name="Season 1 Cinemagraph").exists())
+        self.assertFalse(Title.objects.filter(name="Season 1 Character Intro Clip").exists())
+
+    def test_clean_title_only_rewrites_supplemental_title_shapes_for_supplemental_rows(self):
+        self.assertEqual(
+            clean_title("Season 4 Teaser 3 (Cinemagraph): You", "TEASER_TRAILER"),
+            "You",
+        )
+        self.assertEqual(
+            clean_title("Trailer Park Boys: Season 12 (Trailer)", "TRAILER"),
+            "Trailer Park Boys",
+        )
+        self.assertEqual(
+            clean_title("Star Wars: Episode VIII: The Last Jedi", ""),
+            "Star Wars: Episode VIII: The Last Jedi",
+        )
+
+
+class TitleMetadataEnrichmentTests(TestCase):
+    def test_manual_override_populates_cached_title_metadata(self):
+        title = Title.objects.create(name="Young Sheldon", normalized_name="young sheldon")
+
+        apply_manual_overrides([title])
+
+        title.refresh_from_db()
+        self.assertEqual(title.canonical_name, "Young Sheldon")
+        self.assertEqual(title.media_type, Title.MediaType.TV_SHOW)
+        self.assertIn("TV Comedies", title.genres)
+        self.assertEqual(title.origin_countries, ["US"])
+        self.assertEqual(title.original_language, "en")
+        self.assertEqual(title.metadata_source, "manual")
+        self.assertEqual(title.enrichment_status, Title.EnrichmentStatus.MATCHED)
+
+    def test_analytics_prefers_cached_genres_over_static_dataset(self):
+        import pandas as pd
+
+        dataframe = pd.DataFrame(
+            [
+                {
+                    "New Title": "Young Sheldon",
+                    "Watchtime (hrs)": 1.5,
+                    "Metadata Genres": ["TV Comedies"],
+                    "Metadata Origin Countries": ["US"],
+                    "Metadata Runtime Minutes": 22,
+                    "Metadata Release Year": 2017,
+                    "Type": "TV Show",
+                }
+            ]
+        )
+
+        enriched = enrichWithTitleMetadata(dataframe)
+
+        self.assertEqual(enriched.iloc[0]["Primary Genre"], "TV Comedies")
+        self.assertEqual(enriched.iloc[0]["Release Year"], 2017)
+        self.assertEqual(enriched.iloc[0]["Metadata Country"], "United States")
+        self.assertEqual(enriched.iloc[0]["Runtime Bucket"], "Short")
+
+    def test_analytics_uses_manual_override_for_raw_csv_titles(self):
+        import pandas as pd
+
+        dataframe = pd.DataFrame([{"New Title": "Brooklyn Nine-Nine", "Watchtime (hrs)": 2.0}])
+
+        enriched = enrichWithTitleMetadata(dataframe)
+
+        self.assertEqual(enriched.iloc[0]["Primary Genre"], "TV Comedies")
+
+    def test_content_insights_prefer_known_metadata_categories(self):
+        import pandas as pd
+
+        dataframe = pd.DataFrame(
+            [
+                {
+                    "New Title": "Known Show",
+                    "Watchtime (hrs)": 1.0,
+                    "Month": 1,
+                    "Type": "TV Show",
+                    "Rating": "TV-14",
+                    "Metadata Genres": ["TV Comedies"],
+                    "Metadata Origin Countries": ["US"],
+                    "Metadata Runtime Minutes": 22,
+                    "Metadata Release Year": 2020,
+                },
+                {
+                    "New Title": "Unknown Show",
+                    "Watchtime (hrs)": 5.0,
+                    "Month": 1,
+                    "Type": "Unknown",
+                    "Rating": "Unknown",
+                    "Metadata Genres": [],
+                    "Metadata Origin Countries": [],
+                    "Metadata Runtime Minutes": None,
+                    "Metadata Release Year": None,
+                },
+            ]
+        )
+
+        insights = getGenreContentInsightsData(dataframe)
+
+        self.assertEqual(insights["top_genre_by_month"][0]["genre"], "TV Comedies")
+        self.assertEqual(insights["top_genre_by_month"][0]["month_label"], "January")
+        self.assertEqual(insights["genre_watchtime"][0]["genre"], "TV Comedies")
+        self.assertEqual(insights["country_watchtime"][0]["country"], "United States")
+        self.assertEqual(insights["rating_watchtime"][0]["rating"], "TV-14")
+        self.assertEqual(insights["release_period_watchtime"][0]["period"], "2020-2024")

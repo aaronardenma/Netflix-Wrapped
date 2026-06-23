@@ -1,0 +1,106 @@
+{
+  "the office u s": {
+    "canonical_name": "The Office",
+    "media_type": "TV Show",
+    "genres": ["TV Comedies"],
+    "origin_countries": ["US"],
+    "original_language": "en",
+    "release_year": 2005,
+    "runtime_minutes": 22,
+    "rating": "TV-14",
+    "poster_url": "https://image.tmdb.org/t/p/w500/7DJKHzAi83BmQrWLrYYOqcoKfhR.jpg",
+    "tmdb_id": 2316,
+    "source": "manual",
+    "confidence": 1.0
+  },
+  "brooklyn nine nine": {
+    "canonical_name": "Brooklyn Nine-Nine",
+    "media_type": "TV Show",
+    "genres": ["TV Comedies", "Crime TV Shows"],
+    "origin_countries": ["US"],
+    "original_language": "en",
+    "source": "manual",
+    "confidence": 1.0
+  },
+  "young sheldon": {
+    "canonical_name": "Young Sheldon",
+    "media_type": "TV Show",
+    "genres": ["TV Comedies"],
+    "origin_countries": ["US"],
+    "original_language": "en",
+    "source": "manual",
+    "confidence": 1.0
+  },
+  "our blues": {
+    "canonical_name": "Our Blues",
+    "media_type": "TV Show",
+    "genres": ["Korean TV Shows", "TV Dramas", "Romantic TV Shows"],
+    "origin_countries": ["KR"],
+    "original_language": "ko",
+    "source": "manual",
+    "confidence": 1.0
+  },
+  "vinland saga": {
+    "canonical_name": "VINLAND SAGA",
+    "media_type": "TV Show",
+    "genres": ["Anime Series", "International TV Shows"],
+    "origin_countries": ["JP"],
+    "original_language": "ja",
+    "source": "manual",
+    "confidence": 1.0
+  },
+  "love to hate you": {
+    "canonical_name": "Love to Hate You",
+    "media_type": "TV Show",
+    "genres": ["Korean TV Shows", "Romantic TV Shows", "TV Comedies"],
+    "origin_countries": ["KR"],
+    "original_language": "ko",
+    "source": "manual",
+    "confidence": 1.0
+  },
+  "cunk on earth": {
+    "canonical_name": "Cunk On Earth",
+    "media_type": "TV Show",
+    "genres": ["British TV Shows", "Docuseries", "TV Comedies"],
+    "origin_countries": ["GB"],
+    "original_language": "en",
+    "source": "manual",
+    "confidence": 1.0
+  },
+  "summer strike": {
+    "canonical_name": "Summer Strike",
+    "media_type": "TV Show",
+    "genres": ["Korean TV Shows", "Romantic TV Shows", "TV Dramas"],
+    "origin_countries": ["KR"],
+    "original_language": "ko",
+    "source": "manual",
+    "confidence": 1.0
+  },
+  "divorce attorney shin": {
+    "canonical_name": "Divorce Attorney Shin",
+    "media_type": "TV Show",
+    "genres": ["Korean TV Shows", "TV Dramas"],
+    "origin_countries": ["KR"],
+    "original_language": "ko",
+    "source": "manual",
+    "confidence": 1.0
+  },
+  "the glory": {
+    "canonical_name": "The Glory",
+    "media_type": "TV Show",
+    "genres": ["Korean TV Shows", "TV Dramas", "TV Thrillers"],
+    "origin_countries": ["KR"],
+    "original_language": "ko",
+    "source": "manual",
+    "confidence": 1.0
+  },
+  "crash course in romance": {
+    "canonical_name": "Crash Course in Romance",
+    "media_type": "TV Show",
+    "genres": ["Korean TV Shows", "Romantic TV Shows", "TV Comedies"],
+    "origin_countries": ["KR"],
+    "original_language": "ko",
+    "source": "manual",
+    "confidence": 1.0
+  }
+}

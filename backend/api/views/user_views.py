@@ -1,47 +1,77 @@
-from django.contrib.auth import get_user_model
-from django.contrib.auth import authenticate
+from django.conf import settings
+from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import default_token_generator
-from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.mail import send_mail
-from django.db import transaction
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
-from smtplib import SMTPException
-from rest_framework.views import APIView
-from rest_framework.response import Response
 from rest_framework import status, permissions
-from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from ..authentication import JWTCookieAuthentication
+from rest_framework.response import Response
+from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
-from ..models import NetflixProfile, Upload
+from rest_framework_simplejwt.tokens import RefreshToken
+from smtplib import SMTPException
+
+from ..authentication import JWTCookieAuthentication
+from ..services.accounts import (
+    create_auth_tokens,
+    current_password_error,
+    delete_account,
+    serialize_user,
+    wipe_saved_data,
+)
 
 
 User = get_user_model()
 
-def get_tokens_for_user(user):
-    refresh = RefreshToken.for_user(user)
-    return str(refresh), str(refresh.access_token)
+
+def set_auth_cookies(response, refresh_token, access_token):
+    cookie_options = {
+        "httponly": True,
+        "secure": settings.SESSION_COOKIE_SECURE,
+        "samesite": settings.SESSION_COOKIE_SAMESITE,
+        "path": "/",
+    }
+    response.set_cookie(
+        "access_token",
+        access_token,
+        max_age=3600,
+        **cookie_options,
+    )
+    response.set_cookie(
+        "refresh_token",
+        refresh_token,
+        max_age=7 * 24 * 3600,
+        **cookie_options,
+    )
+    return response
 
 
-class MeView(APIView):
+def clear_auth_cookies(response):
+    response.delete_cookie(
+        "access_token",
+        path="/",
+        samesite=settings.SESSION_COOKIE_SAMESITE,
+    )
+    response.delete_cookie(
+        "refresh_token",
+        path="/",
+        samesite=settings.SESSION_COOKIE_SAMESITE,
+    )
+    return response
+
+
+class CurrentUserView(APIView):
     authentication_classes = [JWTCookieAuthentication]
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        user = request.user
-        return Response({
-            "id": user.id,
-            "email": user.email,
-            "firstName": user.firstName,
-            "lastName": user.lastName
-        })
+        return Response(serialize_user(request.user))
 
 
-
-class LoginView(APIView):
+class UserLoginView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -49,44 +79,25 @@ class LoginView(APIView):
         password = request.data.get("password")
 
         user = authenticate(request, username=email, password=password)
-        if user is not None:
-            if user.is_staff:
-                return Response({"error": "Staff users cannot log in to this app."}, status=403)
+        if user is None:
+            return Response(
+                {"error": "Invalid credentials"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        if user.is_staff:
+            return Response(
+                {"error": "Staff users cannot log in to this app."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
-            refresh_token, access_token = get_tokens_for_user(user)
-            response = Response({
+        refresh_token, access_token = create_auth_tokens(user)
+        response = Response(
+            {
                 "message": "Login successful",
-                "user": {  # Include user data in response
-                    "id": user.id,
-                    "email": user.email
-                }
-            })
-
-            # Set tokens in HttpOnly cookies
-            response.set_cookie(
-                key="access_token",
-                value=access_token,
-                httponly=True,
-                secure=settings.SESSION_COOKIE_SECURE,
-                samesite=settings.SESSION_COOKIE_SAMESITE,
-                max_age=3600,  # 1 hour
-                path="/",  # ensure accessible on all backend routes
-
-            )
-            response.set_cookie(
-                key="refresh_token",
-                value=refresh_token,
-                httponly=True,
-                secure=settings.SESSION_COOKIE_SECURE,
-                samesite=settings.SESSION_COOKIE_SAMESITE,
-                max_age=7 * 24 * 3600,  # 7 days
-                path="/",  # ensure accessible on all backend routes
-
-            )
-
-            return response
-        else:
-            return Response({"error": "Invalid credentials"}, status=401)
+                "user": serialize_user(user),
+            }
+        )
+        return set_auth_cookies(response, refresh_token, access_token)
 
 
 class PasswordResetRequestView(APIView):
@@ -158,30 +169,21 @@ class PasswordResetConfirmView(APIView):
         user.set_password(password)
         user.save(update_fields=["password"])
 
-        response = Response({"message": "Password reset successful"})
-        response.delete_cookie(
-            "access_token",
-            path="/",
-            samesite=settings.SESSION_COOKIE_SAMESITE
+        return clear_auth_cookies(
+            Response({"message": "Password reset successful"})
         )
-        response.delete_cookie(
-            "refresh_token",
-            path="/",
-            samesite=settings.SESSION_COOKIE_SAMESITE
-        )
-        return response
 
 
         
 # views.py
-class RegisterView(APIView):
+class UserRegistrationView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
         email = request.data.get("email")
         password = request.data.get("password")
-        first_name = request.data.get("firstName")  # Note: camelCase from frontend
-        last_name = request.data.get("lastName")    # Note: camelCase from frontend
+        first_name = request.data.get("firstName")
+        last_name = request.data.get("lastName")
 
         # Validation
         if not email or not password:
@@ -193,48 +195,26 @@ class RegisterView(APIView):
         if User.objects.filter(email=email).exists():
             return Response({"error": "Email already exists"}, status=400)
 
-        # Create user with all required fields
         user = User.objects.create_user(
             email=email, 
             password=password,
-            firstName=first_name,  # Your model uses firstName
-            lastName=last_name     # Your model uses lastName
+            firstName=first_name,
+            lastName=last_name,
         )
         
-        refresh_token, access_token = get_tokens_for_user(user)
+        refresh_token, access_token = create_auth_tokens(user)
 
-        response = Response({
-            "message": "User created successfully",
-            "user": {  # Optionally return user data for auto-login
-                "id": str(user.id),
-                "email": user.email,
-                "firstName": user.firstName,
-                "lastName": user.lastName
-            }
-        }, status=201)
-
-        # Set cookies (fix secure settings for localhost)
-        response.set_cookie(
-            key="access_token",
-            value=access_token,
-            httponly=True,
-            secure=settings.SESSION_COOKIE_SECURE,
-            samesite=settings.SESSION_COOKIE_SAMESITE,
-            max_age=3600,
+        response = Response(
+            {
+                "message": "User created successfully",
+                "user": serialize_user(user),
+            },
+            status=status.HTTP_201_CREATED,
         )
-        response.set_cookie(
-            key="refresh_token",
-            value=refresh_token,
-            httponly=True,
-            secure=settings.SESSION_COOKIE_SECURE,
-            samesite=settings.SESSION_COOKIE_SAMESITE,
-            max_age=7 * 24 * 3600,
-        )
-
-        return response
+        return set_auth_cookies(response, refresh_token, access_token)
 
 
-class LogoutView(APIView):
+class UserLogoutView(APIView):
     authentication_classes = [JWTCookieAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
@@ -247,22 +227,14 @@ class LogoutView(APIView):
         try:
             token = RefreshToken(refresh_token)
             token.blacklist()
-        except Exception as e:
-            return Response({"error": str(e)}, status=400)
+        except TokenError as exc:
+            return Response(
+                {"error": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         response = Response({"message": "Logout successful"}, status=status.HTTP_205_RESET_CONTENT)
-        response.delete_cookie(
-            "access_token",
-            path="/",
-            samesite=settings.SESSION_COOKIE_SAMESITE
-        )
-        response.delete_cookie(
-            "refresh_token",
-            path="/",
-            samesite=settings.SESSION_COOKIE_SAMESITE
-        )
-
-        return response
+        return clear_auth_cookies(response)
 
 
 class ChangePasswordView(APIView):
@@ -288,10 +260,9 @@ class ChangePasswordView(APIView):
         user.set_password(new_password)
         user.save(update_fields=["password"])
 
-        response = Response({"message": "Password updated successfully"})
-        response.delete_cookie("access_token", path="/", samesite=settings.SESSION_COOKIE_SAMESITE)
-        response.delete_cookie("refresh_token", path="/", samesite=settings.SESSION_COOKIE_SAMESITE)
-        return response
+        return clear_auth_cookies(
+            Response({"message": "Password updated successfully"})
+        )
 
 
 class WipeUserDataView(APIView):
@@ -300,20 +271,21 @@ class WipeUserDataView(APIView):
 
     def post(self, request):
         current_password = request.data.get("currentPassword", "")
-        if not current_password:
-            return Response({"error": "Current password required"}, status=400)
+        password_error = current_password_error(
+            request.user,
+            current_password,
+        )
+        if password_error:
+            return Response(
+                {"error": password_error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        if not request.user.check_password(current_password):
-            return Response({"error": "Current password is incorrect"}, status=400)
-
-        with transaction.atomic():
-            uploads_deleted, _ = Upload.objects.filter(user=request.user).delete()
-            profiles_deleted, _ = NetflixProfile.objects.filter(user=request.user).delete()
+        deletion_counts = wipe_saved_data(request.user)
 
         return Response({
             "message": "Your saved data has been removed.",
-            "uploadsDeleted": uploads_deleted,
-            "profilesDeleted": profiles_deleted,
+            **deletion_counts,
         })
 
 
@@ -323,23 +295,15 @@ class DeleteAccountView(APIView):
 
     def post(self, request):
         current_password = request.data.get("currentPassword", "")
-        if not current_password:
-            return Response({"error": "Current password required"}, status=400)
-
         user = request.user
-        if not user.check_password(current_password):
-            return Response({"error": "Current password is incorrect"}, status=400)
+        password_error = current_password_error(user, current_password)
+        if password_error:
+            return Response(
+                {"error": password_error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        refresh_token = request.COOKIES.get("refresh_token")
-        if refresh_token:
-            try:
-                RefreshToken(refresh_token).blacklist()
-            except Exception:
-                pass
-
-        user.delete()
-
-        response = Response({"message": "Account deleted successfully"})
-        response.delete_cookie("access_token", path="/", samesite=settings.SESSION_COOKIE_SAMESITE)
-        response.delete_cookie("refresh_token", path="/", samesite=settings.SESSION_COOKIE_SAMESITE)
-        return response
+        delete_account(user, request.COOKIES.get("refresh_token"))
+        return clear_auth_cookies(
+            Response({"message": "Account deleted successfully"})
+        )

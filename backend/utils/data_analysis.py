@@ -1,7 +1,36 @@
-from rest_framework.response import Response
-from utils.workflows import *
 import pandas as pd
 import os
+import json
+import string
+
+from utils.workflows import (
+    K_NETFLIX_TITLES,
+    dataframeSetUp,
+    generateMediaType,
+    generateRatings,
+    generateShowTitles,
+    getMonthlyWatchtimeData,
+    getMostWatchedRatingsData,
+    getTotalTitleWatchtimeData,
+    getTotalTypeWatchtimeData,
+    preprocessTitles,
+)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+GRAPH_SCHEMA_VERSION = 5
+METADATA_OVERRIDES_CACHE = None
+COUNTRY_CODE_LABELS = {
+    "US": "United States",
+    "KR": "South Korea",
+    "JP": "Japan",
+    "GB": "United Kingdom",
+    "CA": "Canada",
+    "CN": "China",
+    "FR": "France",
+    "DE": "Germany",
+    "IN": "India",
+    "ES": "Spain",
+}
 
 
 def _round_number(value, digits=2):
@@ -41,22 +70,52 @@ def _metadata_for_title(title):
 
     matches = K_NETFLIX_TITLES[K_NETFLIX_TITLES["title"] == title]
     if matches.empty:
+        normalized = preprocessTitles(str(title).strip().lower())
+        matches = K_NETFLIX_TITLES[K_NETFLIX_TITLES["normalized title"] == normalized]
+    if matches.empty:
         return {}
     return matches.iloc[0].to_dict()
 
 
+def _manual_metadata_for_title(title):
+    global METADATA_OVERRIDES_CACHE
+    if METADATA_OVERRIDES_CACHE is None:
+        overrides_path = os.path.join(BASE_DIR, "title_metadata_overrides.json")
+        try:
+            with open(overrides_path, "r", encoding="utf-8") as handle:
+                METADATA_OVERRIDES_CACHE = json.load(handle)
+        except FileNotFoundError:
+            METADATA_OVERRIDES_CACHE = {}
+    normalized = str(title).strip().lower().translate(
+        str.maketrans({char: " " for char in string.punctuation})
+    )
+    return METADATA_OVERRIDES_CACHE.get(" ".join(normalized.split()), {})
+
+
 def _split_genres(value):
+    if isinstance(value, list):
+        return [genre for genre in value if genre] or ["Unknown"]
     if pd.isna(value) or not value:
         return ["Unknown"]
     return [genre.strip() for genre in str(value).split(",") if genre.strip()] or ["Unknown"]
 
 
-def _release_decade(value):
+def _cached_value(row, column, fallback=""):
+    value = row.get(column, fallback)
+    if isinstance(value, list):
+        return value or fallback
+    if pd.isna(value) or value == "":
+        return fallback
+    return value
+
+
+def _release_period(value):
     if pd.isna(value):
         return "Unknown"
     try:
         year = int(value)
-        return f"{year // 10 * 10}s"
+        start = year // 5 * 5
+        return f"{start}-{start + 4}"
     except (TypeError, ValueError):
         return "Unknown"
 
@@ -85,21 +144,239 @@ def _runtime_bucket(media_type, duration):
     return "Long-form"
 
 
+def _runtime_bucket_from_minutes(media_type, minutes):
+    if pd.isna(minutes) or not minutes:
+        return "Unknown"
+    try:
+        minutes = int(minutes)
+    except (TypeError, ValueError):
+        return "Unknown"
+
+    if minutes < 30:
+        return "Short"
+    if minutes < 60:
+        return "Episode-length"
+    if media_type == "Movie":
+        return "Movie-length"
+    return "Long-form"
+
+
+def _metadata_country_from_codes(codes):
+    if isinstance(codes, list) and codes:
+        return COUNTRY_CODE_LABELS.get(str(codes[0]).upper(), codes[0])
+    return None
+
+
+def _metadata_country_label(value):
+    if isinstance(value, list):
+        return _metadata_country_from_codes(value) or "Unknown"
+    if pd.isna(value) or not value:
+        return "Unknown"
+    country = str(value).split(",")[0].strip()
+    return COUNTRY_CODE_LABELS.get(country.upper(), country)
+
+
 def enrichWithTitleMetadata(df: pd.DataFrame) -> pd.DataFrame:
     working_df = df.copy()
     metadata_rows = working_df["New Title"].apply(_metadata_for_title)
+    manual_metadata_rows = working_df["New Title"].apply(_manual_metadata_for_title)
 
-    working_df["Genres"] = metadata_rows.apply(lambda row: _split_genres(row.get("listed_in")))
-    working_df["Primary Genre"] = working_df["Genres"].apply(lambda genres: genres[0])
-    working_df["Release Year"] = metadata_rows.apply(lambda row: row.get("release_year"))
-    working_df["Release Decade"] = working_df["Release Year"].apply(_release_decade)
-    working_df["Metadata Country"] = metadata_rows.apply(
-        lambda row: "Unknown" if pd.isna(row.get("country")) or not row.get("country") else str(row.get("country")).split(",")[0].strip()
+    working_df["Genres"] = working_df.apply(
+        lambda row: _split_genres(
+            _cached_value(
+                row,
+                "Metadata Genres",
+                manual_metadata_rows.loc[row.name].get("genres") or metadata_rows.loc[row.name].get("listed_in"),
+            )
+        ),
+        axis=1,
     )
-    working_df["Runtime Bucket"] = metadata_rows.apply(
-        lambda row: _runtime_bucket(row.get("type"), row.get("duration"))
+    working_df["Primary Genre"] = working_df["Genres"].apply(lambda genres: genres[0])
+    working_df["Release Year"] = working_df.apply(
+        lambda row: _cached_value(
+            row,
+            "Metadata Release Year",
+            manual_metadata_rows.loc[row.name].get("release_year") or metadata_rows.loc[row.name].get("release_year"),
+        ),
+        axis=1,
+    )
+    working_df["Release Period"] = working_df["Release Year"].apply(_release_period)
+    working_df["Metadata Country"] = working_df.apply(
+        lambda row: _cached_value(
+            row,
+            "Metadata Origin Countries",
+            manual_metadata_rows.loc[row.name].get("origin_countries") or metadata_rows.loc[row.name].get("country"),
+        ),
+        axis=1,
+    )
+    working_df["Metadata Country"] = working_df["Metadata Country"].apply(
+        lambda value: _metadata_country_from_codes(value)
+        if isinstance(value, list)
+        else _metadata_country_label(value)
+    )
+    working_df["Runtime Bucket"] = working_df.apply(
+        lambda row: (
+            _runtime_bucket_from_minutes(row.get("Type"), row.get("Metadata Runtime Minutes"))
+            if row.get("Metadata Runtime Minutes")
+            else _runtime_bucket(metadata_rows.loc[row.name].get("type"), metadata_rows.loc[row.name].get("duration"))
+        ),
+        axis=1,
+    )
+    working_df["Poster URL"] = working_df.apply(
+        lambda row: _cached_value(row, "Metadata Poster URL", manual_metadata_rows.loc[row.name].get("poster_url") or ""),
+        axis=1,
     )
     return working_df
+
+
+def _poster_for_title(df: pd.DataFrame, title: str) -> str:
+    if not title or "Poster URL" not in df.columns:
+        return ""
+    series_match = df["Series Title"] == title if "Series Title" in df.columns else False
+    matches = df[(df["New Title"] == title) | series_match]
+    if len(matches) == 0:
+        return ""
+    posters = matches["Poster URL"].dropna()
+    posters = posters[posters.astype(str).str.strip() != ""]
+    return str(posters.iloc[0]) if len(posters) else ""
+
+
+def _top_title_posters(df: pd.DataFrame, limit=5) -> list:
+    if "Poster URL" not in df.columns:
+        return []
+    grouped = (
+        df.groupby("New Title", as_index=False)
+        .agg(
+            hrs=("Watchtime (hrs)", "sum"),
+            poster_url=("Poster URL", lambda values: next(
+                (str(value) for value in values if pd.notna(value) and str(value).strip()),
+                "",
+            )),
+        )
+        .sort_values("hrs", ascending=False)
+    )
+    grouped = grouped[grouped["poster_url"] != ""].head(limit)
+    return [
+        {
+            "title": row["New Title"],
+            "hrs": _round_number(row["hrs"]),
+            "poster_url": row["poster_url"],
+        }
+        for _, row in grouped.iterrows()
+    ]
+
+
+def _month_label(month):
+    return pd.Timestamp(year=2000, month=int(month), day=1).strftime("%B")
+
+
+def _watching_personality(df):
+    avg_session_minutes = df["Watchtime (hrs)"].mean() * 60
+    night_hours = df[df["Start Time"].dt.hour >= 21]["Watchtime (hrs)"].sum()
+    weekend_hours = df[df["Start Time"].dt.dayofweek >= 5]["Watchtime (hrs)"].sum()
+    total_hours = df["Watchtime (hrs)"].sum() or 1
+
+    if night_hours / total_hours >= 0.35:
+        return {
+            "value": "The Late-Night Binger",
+            "description": "Your queue comes alive after dark.",
+        }
+    if weekend_hours / total_hours >= 0.45:
+        return {
+            "value": "The Weekend Marathoner",
+            "description": "You save your biggest sessions for days off.",
+        }
+    if avg_session_minutes < 20:
+        return {
+            "value": "The Snack Watcher",
+            "description": "Short sessions, frequent check-ins, low commitment.",
+        }
+    return {
+        "value": "The Steady Streamer",
+        "description": "Consistent sessions define your Netflix rhythm.",
+    }
+
+
+def getWrappedCardsData(df: pd.DataFrame) -> dict:
+    working_df = enrichWithTitleMetadata(df)
+    working_df["Started Date"] = working_df["Start Time"].dt.date
+
+    title_insights = getTitleLevelInsightsData(working_df)
+    core_stats = getCoreStatsData(working_df)
+
+    comfort_show = None
+    if title_insights.get("rewatched_favorites"):
+        top_rewatch = title_insights["rewatched_favorites"][0]
+        comfort_show = {
+            "value": top_rewatch["title"],
+            "description": f"{top_rewatch['watch_count']} watches across {top_rewatch['active_days']} active days.",
+            "poster_url": _poster_for_title(working_df, top_rewatch["title"]),
+        }
+    elif title_insights.get("top_shows"):
+        top_show = title_insights["top_shows"][0]
+        comfort_show = {
+            "value": top_show["show"],
+            "description": f"{top_show['hrs']} hours watched.",
+            "poster_url": _poster_for_title(working_df, top_show["show"]),
+        }
+
+    month_grouped = (
+        working_df.groupby("Month", as_index=False)
+        .agg(
+            hrs=("Watchtime (hrs)", "sum"),
+            titles=("New Title", "nunique"),
+            genres=("Primary Genre", "nunique"),
+        )
+    )
+    month_grouped["chaos_score"] = month_grouped["hrs"] + month_grouped["titles"] * 0.75 + month_grouped["genres"] * 1.5
+    chaotic_month = month_grouped.sort_values("chaos_score", ascending=False).iloc[0]
+
+    genre_era_df = (
+        working_df.groupby(["Primary Genre", "Release Period"], as_index=False)["Watchtime (hrs)"]
+        .sum()
+        .sort_values("Watchtime (hrs)", ascending=False)
+    )
+    top_genre_era = genre_era_df.iloc[0] if len(genre_era_df) else None
+
+    binge_days = 0
+    total_active_days = max(working_df["Started Date"].nunique(), 1)
+    if len(working_df):
+        binge_days = int(
+            working_df.groupby("Started Date").size().loc[lambda values: values >= 3].count()
+        )
+    binge_rate = binge_days / total_active_days
+    binge_percentile = min(99, max(1, round(45 + binge_rate * 95)))
+
+    cards = {
+        "watching_personality": _watching_personality(working_df),
+        "comfort_show": comfort_show or {
+            "value": core_stats["longest_session"]["title"],
+            "description": "Your longest single session title.",
+        },
+        "peak_couch_hour": {
+            "value": core_stats["most_active_hour"]["label"],
+            "description": f"{core_stats['most_active_hour']['hours']} hours watched in this hour.",
+        },
+        "most_chaotic_month": {
+            "value": _month_label(chaotic_month["Month"]),
+            "description": f"{int(chaotic_month['titles'])} titles, {int(chaotic_month['genres'])} genres, {round(float(chaotic_month['hrs']), 2)} hours.",
+        },
+        "top_genre_era": {
+            "value": f"{top_genre_era['Release Period']} {top_genre_era['Primary Genre']}" if top_genre_era is not None else "Unknown",
+            "description": f"{_round_number(top_genre_era['Watchtime (hrs)'])} hours watched." if top_genre_era is not None else "Not enough metadata yet.",
+        },
+        "binge_watcher_percentile": {
+            "value": f"Top {100 - binge_percentile}% binge watcher",
+            "description": f"{binge_days} binge days out of {total_active_days} active days.",
+            "percentile": binge_percentile,
+        },
+        "shareable_recap": {
+            "total_watchtime_hours": core_stats["total_watchtime_hours"],
+            "unique_titles": core_stats["unique_titles"],
+        },
+        "top_title_posters": _top_title_posters(working_df),
+    }
+    return cards
 
 
 def getCoreStatsData(df: pd.DataFrame) -> dict:
@@ -187,9 +464,186 @@ def _group_watchtime_records(df, group_keys, rename_map, limit=None):
     return records
 
 
+def _prefer_known_rows(df, column):
+    if column not in df.columns:
+        return df
+    known = df[df[column] != "Unknown"]
+    return known if len(known) else df
+
+
+def _title_group_records(df, group_keys, rename_map, limit=None, include_counts=True):
+    grouped = (
+        df.groupby(group_keys, as_index=False)
+        .agg(
+            hrs=("Watchtime (hrs)", "sum"),
+            watch_count=("Watchtime (hrs)", "size"),
+            active_days=("Start Time", lambda values: values.dt.date.nunique()),
+        )
+        .sort_values(["hrs", "watch_count"], ascending=[False, False])
+    )
+    if limit:
+        grouped = grouped.head(limit)
+
+    records = []
+    for _, row in grouped.iterrows():
+        record = {target: row[source] for source, target in rename_map.items()}
+        record["hrs"] = _round_number(row["hrs"])
+        if include_counts:
+            record["watch_count"] = int(row["watch_count"])
+            record["active_days"] = int(row["active_days"])
+        records.append(record)
+    return records
+
+
+def getTitleLevelInsightsData(df: pd.DataFrame) -> dict:
+    working_df = df.copy()
+    working_df["Series Title"] = working_df.get("Series Title", working_df["New Title"]).fillna(working_df["New Title"])
+    working_df["Season Label"] = working_df.get("Season Label", "").fillna("")
+    working_df["Episode Title"] = working_df.get("Episode Title", "").fillna("")
+    working_df["Is Episode"] = working_df.get("Is Episode", False).fillna(False).astype(bool)
+    working_df["Started Date"] = working_df["Start Time"].dt.date
+
+    shows_df = working_df[
+        (working_df["Type"] == "TV Show") | (working_df["Is Episode"])
+    ].copy()
+    movies_df = working_df[working_df["Type"] == "Movie"].copy()
+
+    top_titles = _title_group_records(
+        working_df,
+        ["New Title", "Type"],
+        {"New Title": "title", "Type": "type"},
+        limit=10,
+    )
+    top_shows = _title_group_records(
+        shows_df,
+        ["Series Title"],
+        {"Series Title": "show"},
+        limit=10,
+    ) if len(shows_df) else []
+    top_movies = _title_group_records(
+        movies_df,
+        ["New Title"],
+        {"New Title": "movie"},
+        limit=10,
+    ) if len(movies_df) else []
+
+    episodes_per_show = []
+    if len(shows_df):
+        episode_grouped = (
+            shows_df.groupby("Series Title", as_index=False)
+            .agg(
+                episodes=("Episode Title", lambda values: int(values.replace("", pd.NA).dropna().nunique())),
+                watches=("Episode Title", "size"),
+                hrs=("Watchtime (hrs)", "sum"),
+            )
+            .sort_values(["episodes", "watches", "hrs"], ascending=[False, False, False])
+            .head(10)
+        )
+        episodes_per_show = [
+            {
+                "show": row["Series Title"],
+                "episodes": int(row["episodes"] or row["watches"]),
+                "watches": int(row["watches"]),
+                "hrs": _round_number(row["hrs"]),
+            }
+            for _, row in episode_grouped.iterrows()
+        ]
+
+    season_watchtime = []
+    season_df = shows_df[shows_df["Season Label"] != ""]
+    if len(season_df):
+        season_grouped = (
+            season_df.groupby(["Series Title", "Season Label"], as_index=False)
+            .agg(
+                hrs=("Watchtime (hrs)", "sum"),
+                watch_count=("Watchtime (hrs)", "size"),
+                active_days=("Start Time", lambda values: values.dt.date.nunique()),
+            )
+            .sort_values("hrs", ascending=False)
+            .head(12)
+        )
+        season_watchtime = [
+            {
+                "show": row["Series Title"],
+                "season": row["Season Label"],
+                "label": f"{row['Series Title']} - {row['Season Label']}",
+                "hrs": _round_number(row["hrs"]),
+                "watch_count": int(row["watch_count"]),
+                "active_days": int(row["active_days"]),
+            }
+            for _, row in season_grouped.iterrows()
+        ]
+
+    most_binged_series = []
+    if len(shows_df):
+        binge_grouped = (
+            shows_df.groupby(["Series Title", "Started Date"], as_index=False)
+            .agg(
+                episode_watches=("Episode Title", "size"),
+                hrs=("Watchtime (hrs)", "sum"),
+            )
+            .sort_values(["episode_watches", "hrs"], ascending=[False, False])
+        )
+        best_binge_by_show = (
+            binge_grouped.sort_values(["Series Title", "episode_watches", "hrs"], ascending=[True, False, False])
+            .drop_duplicates("Series Title")
+            .sort_values(["episode_watches", "hrs"], ascending=[False, False])
+            .head(10)
+        )
+        most_binged_series = [
+            {
+                "show": row["Series Title"],
+                "date": row["Started Date"].isoformat(),
+                "episode_watches": int(row["episode_watches"]),
+                "hrs": _round_number(row["hrs"]),
+            }
+            for _, row in best_binge_by_show.iterrows()
+        ]
+
+    rewatch_grouped = (
+        working_df.groupby(["New Title", "Type"], as_index=False)
+        .agg(
+            watch_count=("Watchtime (hrs)", "size"),
+            hrs=("Watchtime (hrs)", "sum"),
+            active_days=("Start Time", lambda values: values.dt.date.nunique()),
+        )
+    )
+    rewatched = rewatch_grouped[rewatch_grouped["watch_count"] > 1].copy()
+    rewatched = rewatched.sort_values(["watch_count", "hrs"], ascending=[False, False]).head(10)
+    rewatched_favorites = [
+        {
+            "title": row["New Title"],
+            "type": row["Type"],
+            "watch_count": int(row["watch_count"]),
+            "repeat_watches": int(row["watch_count"] - 1),
+            "active_days": int(row["active_days"]),
+            "hrs": _round_number(row["hrs"]),
+        }
+        for _, row in rewatched.iterrows()
+    ]
+
+    hidden_obsession = rewatched_favorites[0] if rewatched_favorites else None
+
+    return {
+        "top_titles": top_titles,
+        "top_shows": top_shows,
+        "top_movies": top_movies,
+        "most_binged_series": most_binged_series,
+        "episodes_per_show": episodes_per_show,
+        "season_watchtime": season_watchtime,
+        "rewatched_favorites": rewatched_favorites,
+        "hidden_obsession": hidden_obsession,
+    }
+
+
 def getGenreContentInsightsData(df: pd.DataFrame) -> dict:
     working_df = enrichWithTitleMetadata(df)
     exploded_genres = working_df.explode("Genres")
+    known_genres = _prefer_known_rows(exploded_genres, "Genres")
+    known_periods = _prefer_known_rows(working_df, "Release Period")
+    known_countries = _prefer_known_rows(working_df, "Metadata Country")
+    known_runtime = _prefer_known_rows(working_df, "Runtime Bucket")
+    known_ratings = _prefer_known_rows(working_df, "Rating")
 
     top_genre_by_month = []
     monthly_genres = (
@@ -198,44 +652,168 @@ def getGenreContentInsightsData(df: pd.DataFrame) -> dict:
         .sort_values(["Month", "Watchtime (hrs)"], ascending=[True, False])
     )
     for month, month_df in monthly_genres.groupby("Month"):
+        month_df = _prefer_known_rows(month_df, "Genres")
         top = month_df.iloc[0]
         top_genre_by_month.append({
             "month": int(month),
+            "month_label": _month_label(month),
             "genre": str(top["Genres"]),
             "hrs": _round_number(top["Watchtime (hrs)"]),
         })
 
     return {
         "genre_watchtime": _group_watchtime_records(
-            exploded_genres,
+            known_genres,
             ["Genres"],
             {"Genres": "genre"},
             limit=12,
         ),
         "genre_by_month": _group_watchtime_records(
-            exploded_genres,
+            known_genres,
             ["Month", "Genres"],
             {"Month": "month", "Genres": "genre"},
         ),
         "top_genre_by_month": top_genre_by_month,
+        "release_period_watchtime": _group_watchtime_records(
+            known_periods,
+            ["Release Period"],
+            {"Release Period": "period"},
+            limit=10,
+        ),
         "release_decade_watchtime": _group_watchtime_records(
-            working_df,
-            ["Release Decade"],
-            {"Release Decade": "decade"},
+            known_periods,
+            ["Release Period"],
+            {"Release Period": "decade"},
             limit=10,
         ),
         "country_watchtime": _group_watchtime_records(
-            working_df,
+            known_countries,
             ["Metadata Country"],
             {"Metadata Country": "country"},
             limit=10,
         ),
         "runtime_preference": _group_watchtime_records(
-            working_df,
+            known_runtime,
             ["Runtime Bucket"],
             {"Runtime Bucket": "bucket"},
         ),
-        "rating_watchtime": getMostWatchedRatingsData(working_df),
+        "rating_watchtime": getMostWatchedRatingsData(known_ratings),
+    }
+
+
+def getVisualizationData(df: pd.DataFrame) -> dict:
+    working_df = enrichWithTitleMetadata(df)
+    working_df["Started Date"] = working_df["Start Time"].dt.date
+    working_df["Date"] = working_df["Started Date"].apply(lambda value: value.isoformat())
+    working_df["Day Of Week"] = working_df["Start Time"].dt.day_name()
+    working_df["Day Index"] = working_df["Start Time"].dt.dayofweek
+    working_df["Hour"] = working_df["Start Time"].dt.hour
+    working_df["Month Label"] = working_df["Month"].apply(_month_label)
+
+    day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+    day_totals = (
+        working_df.groupby(["Day Of Week", "Day Index"], as_index=False)["Watchtime (hrs)"]
+        .sum()
+        .sort_values("Day Index")
+    )
+    day_of_week = [
+        {
+            "day": row["Day Of Week"],
+            "day_index": int(row["Day Index"]),
+            "hrs": _round_number(row["Watchtime (hrs)"]),
+        }
+        for _, row in day_totals.iterrows()
+    ]
+
+    hour_totals = working_df.groupby("Hour", as_index=False)["Watchtime (hrs)"].sum()
+    hour_lookup = {int(row["Hour"]): row["Watchtime (hrs)"] for _, row in hour_totals.iterrows()}
+    hour_of_day = [
+        {
+            "hour": hour,
+            "label": _format_hour(hour),
+            "hrs": _round_number(hour_lookup.get(hour, 0)),
+        }
+        for hour in range(24)
+    ]
+
+    calendar_totals = working_df.groupby("Date", as_index=False)["Watchtime (hrs)"].sum()
+    calendar = [
+        {
+            "date": row["Date"],
+            "hrs": _round_number(row["Watchtime (hrs)"]),
+        }
+        for _, row in calendar_totals.sort_values("Date").iterrows()
+    ]
+
+    daily_timeline = calendar
+
+    monthly_type_df = (
+        working_df.groupby(["Month", "Month Label", "Type"], as_index=False)["Watchtime (hrs)"]
+        .sum()
+        .sort_values(["Month", "Type"])
+    )
+    movie_show_by_month = [
+        {
+            "month": row["Month Label"],
+            "month_number": int(row["Month"]),
+            "type": row["Type"],
+            "hrs": _round_number(row["Watchtime (hrs)"]),
+        }
+        for _, row in monthly_type_df.iterrows()
+    ]
+
+    title_rows = (
+        working_df.groupby(["New Title", "Primary Genre", "Type"], as_index=False)["Watchtime (hrs)"]
+        .sum()
+        .sort_values("Watchtime (hrs)", ascending=False)
+    )
+    title_bubbles = [
+        {
+            "title": row["New Title"],
+            "genre": row["Primary Genre"],
+            "type": row["Type"],
+            "hrs": _round_number(row["Watchtime (hrs)"]),
+        }
+        for _, row in title_rows.head(60).iterrows()
+    ]
+
+    genre_title_rows = (
+        working_df.groupby(["Primary Genre", "New Title"], as_index=False)["Watchtime (hrs)"]
+        .sum()
+        .sort_values("Watchtime (hrs)", ascending=False)
+    )
+    treemap = [
+        {
+            "genre": row["Primary Genre"],
+            "title": row["New Title"],
+            "hrs": _round_number(row["Watchtime (hrs)"]),
+        }
+        for _, row in genre_title_rows.head(120).iterrows()
+    ]
+
+    active_dates = set(working_df["Started Date"].unique())
+    streak_dates = []
+    for active_date in sorted(active_dates):
+        before = active_date - pd.Timedelta(days=1)
+        after = active_date + pd.Timedelta(days=1)
+        if before in active_dates or after in active_dates:
+            streak_dates.append(active_date.isoformat())
+
+    return {
+        "day_order": day_order,
+        "day_of_week_heatmap": day_of_week,
+        "hour_of_day_heatmap": hour_of_day,
+        "calendar_heatmap": calendar,
+        "movie_show_by_month": movie_show_by_month,
+        "watchtime_timeline": daily_timeline,
+        "title_bubbles": title_bubbles,
+        "treemap": treemap,
+        "streak_calendar": {
+            "days": calendar,
+            "streak_dates": streak_dates,
+            "longest_streak_days": _longest_date_streak(working_df["Started Date"]),
+        },
     }
 
 
@@ -323,6 +901,41 @@ def getProfileComparisonData(dataframe: pd.DataFrame, selected_profile: str, yea
         for _, row in household_timeline_df.iterrows()
     ]
 
+    radar_rows = []
+    profile_genre_type_df = enrichWithTitleMetadata(df)
+    profile_genre_type_df = profile_genre_type_df.explode("Genres")
+    for profile, profile_df in df.groupby("Profile Name"):
+        title_set = set(profile_df["New Title"].dropna().unique())
+        total_hrs = profile_df["Watchtime (hrs)"].sum()
+        event_count = len(profile_df)
+        movie_hrs = profile_df.loc[profile_df["Type"] == "Movie", "Watchtime (hrs)"].sum()
+        show_hrs = profile_df.loc[profile_df["Type"] == "TV Show", "Watchtime (hrs)"].sum()
+        active_days = profile_df["Start Time"].dt.date.nunique()
+        radar_rows.append({
+            "profile": profile,
+            "watchtime_hours": _round_number(total_hrs),
+            "unique_titles": len(title_set),
+            "viewing_events": event_count,
+            "movie_hours": _round_number(movie_hrs),
+            "show_hours": _round_number(show_hrs),
+            "active_days": int(active_days),
+        })
+
+    sankey_grouped = (
+        profile_genre_type_df.groupby(["Profile Name", "Genres", "Type"], as_index=False)["Watchtime (hrs)"]
+        .sum()
+        .sort_values("Watchtime (hrs)", ascending=False)
+    )
+    sankey = [
+        {
+            "profile": row["Profile Name"],
+            "genre": row["Genres"],
+            "type": row["Type"],
+            "hrs": _round_number(row["Watchtime (hrs)"]),
+        }
+        for _, row in sankey_grouped.head(80).iterrows()
+    ]
+
     most_unique_profile = None
     if unique_title_counts:
         most_unique_profile = max(unique_title_counts, key=lambda item: item["unique_titles"])
@@ -337,6 +950,8 @@ def getProfileComparisonData(dataframe: pd.DataFrame, selected_profile: str, yea
         "overlap_scores": sorted(overlap_scores, key=lambda item: item["overlap_score"], reverse=True),
         "most_unique_profile": most_unique_profile,
         "household_timeline": household_timeline,
+        "radar_metrics": radar_rows,
+        "sankey_profile_genre_type": sankey,
     }
 
 def getJsonGraphData(dataframe, user, year):
@@ -362,7 +977,7 @@ def getJsonGraphData(dataframe, user, year):
     df = generateRatings(df)
 
     # Generate all graphs
-    graphs = {}
+    graphs = {"schema_version": GRAPH_SCHEMA_VERSION}
     
     try:
         graphs["total_title_watchtime"] = getTotalTitleWatchtimeData(df)
@@ -370,90 +985,12 @@ def getJsonGraphData(dataframe, user, year):
         graphs["monthly_watchtime"] = getMonthlyWatchtimeData(df)
         graphs["ratings_watchtime"] = getMostWatchedRatingsData(df)
         graphs["core_stats"] = getCoreStatsData(df)
+        graphs["title_level_insights"] = getTitleLevelInsightsData(df)
+        graphs["wrapped_cards"] = getWrappedCardsData(df)
         graphs["genre_content_insights"] = getGenreContentInsightsData(df)
+        graphs["visualizations"] = getVisualizationData(df)
     except Exception as e:
         print(f"Error generating graph data: {str(e)}")
         return {"error": f"Failed to generate graph data: {str(e)}"}
     
     return graphs
-
-
-##### CONSOLE
-def runConsoleDataAnalysis(filename):
-    df = readData()
-    df = dataframeSetUp(df)
-
-    df = startTimeManipulation(df)
-    df = convertDurationToHrs(df)
-    df = filterUserConsole(df)
-    createYearlyWatchtimeGraph(df)
-    df = filterYearConsole(df)
-
-    df = generateShowTitles(df)
-    df = generateMediaType(df)
-    df = generateRatings(df)
-
-    # Graph data
-    createTotalTitleWatchtimeGraph(df)
-    createTotalTypeWatchtimeGraph(df)
-    createMonthlyWatchtimeGraph(df)
-    createMostWatchedRatingsGraph(df)
-
-    getResults(df)
-
-
-def getUserYearsData(filename):
-    df = readData(filename)
-    df = startTimeManipulation(df)
-    users = getUsers(df)
-    user_years_data = {}
-    for user in users:
-        user_years_data[user] = getUserActiveYears(df, user)
-
-    return user_years_data
-
-def readData(filename):
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))  
-    # get backend folder path (one level up)
-    backend_dir = os.path.dirname(BASE_DIR)
-    # build path to uploads folder in backend
-    file_path = os.path.join(backend_dir, 'uploads', filename)
-    
-    df = pd.read_csv(file_path)
-    return df
-
-
-def selectUserConsole(df: pd.DataFrame) -> str:
-    print("Who's viewing data would you like to see?")
-    print(getUsers(df))
-    userIndex = int(input()) - 1
-
-    return getUsers(df)[userIndex]
-    
-def selectYearConsole(df: pd.DataFrame) -> int:
-    print("Which Year would you like to view?")
-    print(getYears(df))
-    yearIndex = int(input()) - 1
-
-    return getYears(df)[yearIndex]
-
-def filterUserConsole(df: pd.DataFrame) -> pd.DataFrame:
-    df = df[df["Profile Name"] == selectUserConsole(df)]
-
-    return df
-
-def filterYearConsole(df: pd.DataFrame) -> pd.DataFrame:
-    df = df[df["Year"] == selectYearConsole(df)]
-
-    return df
-
-def getUserActiveYears(df: pd.DataFrame, name: str) -> dict:
-    df = df[df["Profile Name"] == name]
-
-    return getYears(df)
-
-def getResults(df):
-    print("NETFLIX Recap:")
-    print("In "  + str(df['Year'].unique()[0]) + ", you watched " + str(getTotalWatchtime(df)) + " hours of Netflix content, and "
-          + str(getTotalUniqueTitlesWatched(df)) + " unique pieces of content!")
-    print("You watched " + str(getNumOfUniqueMoviesWatched(df)) + " movies and " + str(getNumOfUniqueShowsWatched(df)) + " TV shows!")

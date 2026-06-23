@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 import os
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 from datetime import timedelta
@@ -28,7 +29,11 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'dev-only-secret-key')
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 OMDB_API_KEY = os.getenv("OMDB_API_KEY")  # optional
+TMDB_ENRICHMENT_MAX_TITLES = int(os.getenv("TMDB_ENRICHMENT_MAX_TITLES", "50"))
+TMDB_ENRICHMENT_MAX_CALLS = int(os.getenv("TMDB_ENRICHMENT_MAX_CALLS", "100"))
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+RUNNING_TESTS = "test" in sys.argv
 
 
 def env_bool(name, default=False):
@@ -64,6 +69,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',    
     'rest_framework_simplejwt.token_blacklist',  
+    'django_rq',
       
     'corsheaders',          
     'api', 
@@ -117,6 +123,33 @@ DATABASES = {
         'PASSWORD': os.getenv('POSTGRESQL_PASSWORD'),
         'HOST': os.getenv('POSTGRESQL_HOST', 'localhost'),
         'PORT': os.getenv('POSTGRESQL_PORT', '5432'),
+    }
+}
+
+if RUNNING_TESTS:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "netflix-wrapped-tests",
+        }
+    }
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django_redis.cache.RedisCache",
+            "LOCATION": REDIS_URL,
+            "OPTIONS": {
+                "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            },
+            "KEY_PREFIX": "netflix-wrapped",
+        }
+    }
+
+RQ_QUEUES = {
+    "recaps": {
+        "URL": REDIS_URL,
+        "DEFAULT_TIMEOUT": 60 * 30,
+        "ASYNC": not RUNNING_TESTS,
     }
 }
 

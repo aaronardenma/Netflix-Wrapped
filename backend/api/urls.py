@@ -1,18 +1,23 @@
 from django.urls import path
-from api.views.csv_views import QuickExtractCSVView, PriorityProcessView, GetDataView, ProcessingStatusView, StoredDataView, GetStoredDataView
-from api.views.user_views import (
-    RegisterView,
-    LoginView,
-    LogoutView,
-    MeView,
-    PasswordResetRequestView,
-    PasswordResetConfirmView,
-    ChangePasswordView,
-    WipeUserDataView,
-    DeleteAccountView,
+from api.views.recap_views import (
+    AvailableRecapsView,
+    RecapDataView,
+    RecapProcessingStatusView,
+    SavedRecapView,
+    ViewingHistoryUploadView,
+    YearComparisonView,
 )
-from api.views.image_views import FetchPosterView
+from api.views.user_views import (
+    ChangePasswordView,
+    DeleteAccountView,
+    CurrentUserView,
+    UserLoginView,
+    UserLogoutView,
+    UserRegistrationView,
+    WipeUserDataView,
+)
 from api.views.views import CSRFCookieView
+from api.views.recommendation_views import ProfileRecommendationsView
 
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
@@ -22,28 +27,28 @@ from rest_framework_simplejwt.views import (
 
 
 urlpatterns = [
-    path("auth/register/", RegisterView.as_view(), name="register"),
-    path("auth/login/", LoginView.as_view(), name="login"),
-    path('auth/logout/', LogoutView.as_view(), name='logout'),
-    path("auth/password-reset/request/", PasswordResetRequestView.as_view(), name="password-reset-request"),
-    path("auth/password-reset/confirm/", PasswordResetConfirmView.as_view(), name="password-reset-confirm"),
+    path("auth/register/", UserRegistrationView.as_view(), name="register"),
+    path("auth/login/", UserLoginView.as_view(), name="login"),
+    path('auth/logout/', UserLogoutView.as_view(), name='logout'),
+    # Email-based password reset is disabled until an email provider is configured.
+    # path("auth/password-reset/request/", PasswordResetRequestView.as_view(), name="password-reset-request"),
+    # path("auth/password-reset/confirm/", PasswordResetConfirmView.as_view(), name="password-reset-confirm"),
     path("auth/password/change/", ChangePasswordView.as_view(), name="password-change"),
     path("auth/account/wipe-data/", WipeUserDataView.as_view(), name="wipe-account-data"),
     path("auth/account/delete/", DeleteAccountView.as_view(), name="delete-account"),
 
-    path('csv/quick-extract/', QuickExtractCSVView.as_view(), name='quick-extract'),
-    path('priority-process/', PriorityProcessView.as_view(), name='priority-process'),
-    path('get-data/', GetDataView.as_view(), name='get-data'),
-    path('processing-status/<str:job_id>/', ProcessingStatusView.as_view(), name='processing-status'),
-    path('stored-data/', StoredDataView.as_view(), name='stored-data'),
-    path('get-stored-data/', GetStoredDataView.as_view(), name='get-stored-data'),
-
-    path('posters/', FetchPosterView.as_view(), name='posters'),
+    path('csv/quick-extract/', ViewingHistoryUploadView.as_view(), name='quick-extract'),
+    path('get-data/', RecapDataView.as_view(), name='get-data'),
+    path('processing-status/<str:job_id>/', RecapProcessingStatusView.as_view(), name='processing-status'),
+    path('stored-data/', AvailableRecapsView.as_view(), name='stored-data'),
+    path('get-stored-data/', SavedRecapView.as_view(), name='get-stored-data'),
+    path('compare-years/', YearComparisonView.as_view(), name='compare-years'),
+    path('recommendations/', ProfileRecommendationsView.as_view(), name='recommendations'),
 
     path('auth/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),       # login with username/password to get tokens
     path('auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),      # refresh access token with refresh token
     path('auth/token/verify/', TokenVerifyView.as_view(), name='token_verify'),         
     path("csrf/", CSRFCookieView.as_view(), name="csrf"),
-    path("auth/me/", MeView.as_view(), name="me"),
+    path("auth/me/", CurrentUserView.as_view(), name="me"),
 
 ]

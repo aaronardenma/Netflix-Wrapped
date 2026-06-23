@@ -1,11 +1,7 @@
 import string
 import pandas as pd
-import numpy as np
-import plotly
-import plotly.express as px
-import nltk
-import json
 import os
+import re
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 csv_path = os.path.join(BASE_DIR, 'netflix_titles.csv')
@@ -40,6 +36,29 @@ K_RATING_BY_TITLE = (
     .to_dict()
 )
 
+K_TYPE_BY_NORMALIZED = (
+    K_NETFLIX_TITLES
+    .drop_duplicates('normalized title')
+    .set_index('normalized title')['type']
+    .to_dict()
+)
+
+SEASON_LABEL_PATTERN = re.compile(
+    r"^(Season\s+\d+|Series\s+\d+|Book\s+(\d+|One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten)|"
+    r"Volume\s+\d+|Part\s+(\d+|I|II|III|IV|V|VI|VII|VIII|IX|X)|Limited Series|Collection)$",
+    re.IGNORECASE,
+)
+EPISODE_NUMBER_PATTERN = re.compile(r"\(Episode\s+(\d+)\)", re.IGNORECASE)
+SUPPLEMENTAL_DESCRIPTOR_PATTERN = re.compile(
+    r"\b("
+    r"trailer|teaser|clip|cinemagraph|hook|promo|promotional|preview|recap|bumper|"
+    r"cliffhanger|character intro|genre specific moment|high context|inciting incident|"
+    r"informative|main character|moment of high emotion|plot|relatable|sensory|"
+    r"supporting character|villain|antagonist|conflict|comedy"
+    r")\b",
+    re.IGNORECASE,
+)
+
 # Read in Personal Viewing Data & Kaggle Netflix Dataset
 def dataframeSetUp(df: pd.DataFrame) -> pd.DataFrame:
     # Remove non traditional media from DataFrame (Promos, Trailers)
@@ -48,6 +67,8 @@ def dataframeSetUp(df: pd.DataFrame) -> pd.DataFrame:
     # Drop unneeded columns
     df = df.drop(columns= ['Attributes', 'Bookmark', 'Latest Bookmark'])
 
+    df = preserveTitleParts(df)
+
     # Manipulate Title column to remove season and episode information
     df['Title'] = df['Title'].apply(splitSecondOccurence)
 
@@ -55,6 +76,124 @@ def dataframeSetUp(df: pd.DataFrame) -> pd.DataFrame:
     df = convertDurationToHrs(df)
 
     return df
+
+
+def _canonical_title_for(value: str) -> str:
+    normalized = preprocessTitles(str(value).strip().lower())
+    return K_TITLE_BY_NORMALIZED.get(normalized, str(value).strip())
+
+
+def _metadata_type_for(value: str) -> str:
+    normalized = preprocessTitles(str(value).strip().lower())
+    canonical = K_TITLE_BY_NORMALIZED.get(normalized, str(value).strip())
+    return K_TYPE_BY_TITLE.get(canonical) or K_TYPE_BY_NORMALIZED.get(normalized) or "Unknown"
+
+
+def _season_label_index(parts: list[str]) -> int | None:
+    return next(
+        (index for index, part in enumerate(parts[1:], start=1) if SEASON_LABEL_PATTERN.match(part)),
+        None,
+    )
+
+
+def _is_supplemental_descriptor(part: str) -> bool:
+    stripped = str(part).strip()
+    return bool(
+        SUPPLEMENTAL_DESCRIPTOR_PATTERN.search(stripped)
+        or SEASON_LABEL_PATTERN.match(stripped)
+        or re.match(r"^(Season|Series|Book|Part|Volume)\s+[\w\d]+(?:\s+.*)?$", stripped, re.IGNORECASE)
+    )
+
+
+def extractSupplementalContentTitle(title: str) -> str:
+    raw_title = str(title).strip()
+    parts = [part.strip() for part in raw_title.split(":") if part.strip()]
+    if len(parts) <= 1:
+        return raw_title
+
+    for index in range(len(parts) - 1, 0, -1):
+        candidate = ": ".join(parts[:index]).strip()
+        if _metadata_type_for(candidate) != "Unknown":
+            return _canonical_title_for(candidate)
+
+    for index in range(1, len(parts)):
+        candidate = ": ".join(parts[index:]).strip()
+        if _metadata_type_for(candidate) != "Unknown":
+            return _canonical_title_for(candidate)
+
+    content_start = 0
+    while content_start < len(parts) - 1 and _is_supplemental_descriptor(parts[content_start]):
+        content_start += 1
+
+    if content_start > 0:
+        return ": ".join(parts[content_start:]).strip()
+
+    return splitSecondOccurence(raw_title).strip() or raw_title
+
+
+def parseNetflixTitleParts(title: str) -> dict:
+    raw_title = str(title).strip()
+    parts = [part.strip() for part in raw_title.split(":") if part.strip()]
+    season_index = _season_label_index(parts)
+    episode_number_match = EPISODE_NUMBER_PATTERN.search(raw_title)
+    candidate_series_title = (
+        ": ".join(parts[:season_index]).strip()
+        if season_index is not None
+        else splitSecondOccurence(raw_title).strip()
+    )
+    canonical_candidate = _canonical_title_for(candidate_series_title)
+    metadata_type = _metadata_type_for(candidate_series_title)
+
+    score = 0
+    score += 5 if metadata_type == "TV Show" else 0
+    score -= 5 if metadata_type == "Movie" else 0
+    score += 4 if episode_number_match else 0
+    score += 3 if season_index is not None else 0
+
+    if season_index is None:
+        parsed_type = "TV Show" if score >= 5 else "Movie" if score <= -3 else metadata_type
+        return {
+            "Raw Title": raw_title,
+            "Series Title": canonical_candidate,
+            "Season Label": "",
+            "Episode Title": "",
+            "Episode Number": None,
+            "Is Episode": False,
+            "Parsed Media Type": parsed_type,
+            "Classification Confidence": min(0.99, max(0.35, abs(score) / 10)) if parsed_type != "Unknown" else 0.25,
+            "Classification Source": "metadata" if metadata_type != "Unknown" else "title-pattern",
+        }
+
+    season_label = parts[season_index]
+    episode_parts = parts[season_index + 1:]
+    episode_title = ": ".join(episode_parts).strip()
+    parsed_type = "TV Show" if score >= 5 else "Movie" if score <= -3 else "Unknown"
+    source = "metadata+episode-pattern" if metadata_type != "Unknown" else "episode-pattern"
+
+    return {
+        "Raw Title": raw_title,
+        "Series Title": canonical_candidate,
+        "Season Label": season_label,
+        "Episode Title": episode_title,
+        "Episode Number": int(episode_number_match.group(1)) if episode_number_match else None,
+        "Is Episode": parsed_type == "TV Show" and bool(episode_number_match),
+        "Parsed Media Type": parsed_type,
+        "Classification Confidence": min(0.99, max(0.35, abs(score) / 10)) if parsed_type != "Unknown" else 0.35,
+        "Classification Source": source,
+    }
+
+
+def preserveTitleParts(df: pd.DataFrame) -> pd.DataFrame:
+    title_parts = df["Title"].apply(parseNetflixTitleParts).apply(pd.Series)
+    for column in title_parts.columns:
+        if column in df.columns:
+            existing = df[column]
+            missing = existing.isna() | (existing.astype(str).str.strip() == "")
+            df.loc[missing, column] = title_parts.loc[missing, column]
+        else:
+            df[column] = title_parts[column]
+    return df
+
 
 # Manipulate Start Time column to gain new columns: Year, Month
 def startTimeManipulation(df: pd.DataFrame) -> pd.DataFrame:
@@ -74,13 +213,15 @@ def startTimeManipulation(df: pd.DataFrame) -> pd.DataFrame:
 
 # Clean Title column values dependent on title order construction by delimieter
 def splitSecondOccurence(str: str) -> str:
-    splitList = str.split(":")
-    if (len(splitList) <= 1):
-        return splitList[0]
-    elif not ("Season" or "Episode" in splitList[1]):
-        return splitList[0] + splitList[1]
-    else:
-        return splitList[0]
+    splitList = [part.strip() for part in str.split(":") if part.strip()]
+    if len(splitList) <= 1:
+        return splitList[0] if splitList else ""
+
+    season_index = _season_label_index(splitList)
+    if season_index is not None:
+        return ": ".join(splitList[:season_index])
+
+    return ": ".join(splitList)
 
 # Convert Duration Column Format to an hr columns
 def convertDurationToHrs(df: pd.DataFrame) -> pd.DataFrame:
@@ -100,6 +241,9 @@ def generateShowTitles(df: pd.DataFrame) -> pd.DataFrame:
     df['Title'] = df['Title'].str.strip()
     normalized_titles = df['Title'].str.lower().apply(preprocessTitles)
     df['New Title'] = normalized_titles.map(K_TITLE_BY_NORMALIZED).fillna(df['Title'])
+    if 'Is Episode' in df.columns and 'Series Title' in df.columns:
+        episode_mask = df['Is Episode'].fillna(False).astype(bool)
+        df.loc[episode_mask, 'New Title'] = df.loc[episode_mask, 'Series Title']
 
     return df
 
@@ -111,6 +255,23 @@ def preprocessTitles(text: str) -> str:
 # Create new column for Netflix Media Types for content pieces
 def generateMediaType(df: pd.DataFrame) -> pd.DataFrame:
     df['Type'] = df['New Title'].map(K_TYPE_BY_TITLE).fillna("Unknown")
+    if 'Cached Media Type' in df.columns:
+        cached_type = df['Cached Media Type'].fillna("").replace({
+            "movie": "Movie",
+            "tv_show": "TV Show",
+            "unknown": "Unknown",
+        })
+        cached_mask = cached_type.isin(["Movie", "TV Show"])
+        df.loc[cached_mask, 'Type'] = cached_type[cached_mask]
+    if 'Parsed Media Type' in df.columns:
+        parsed_type = df['Parsed Media Type'].fillna("Unknown")
+        confidence = df['Classification Confidence'].fillna(0) if 'Classification Confidence' in df.columns else 0
+        df.loc[df['Type'] == "Unknown", 'Type'] = parsed_type[df['Type'] == "Unknown"]
+        high_confidence_tv = (
+            (parsed_type == "TV Show")
+            & (confidence >= 0.7)
+        )
+        df.loc[high_confidence_tv, 'Type'] = "TV Show"
 
     return df
         
@@ -118,6 +279,9 @@ def generateMediaType(df: pd.DataFrame) -> pd.DataFrame:
 # Get Rating Type
 def generateRatings(df: pd.DataFrame) -> pd.DataFrame:
     df['Rating'] = df['New Title'].map(K_RATING_BY_TITLE).fillna("Unknown")
+    if 'Metadata Rating' in df.columns:
+        cached_rating = df['Metadata Rating'].fillna("")
+        df.loc[cached_rating != "", 'Rating'] = cached_rating[cached_rating != ""]
 
     return df
 
@@ -132,28 +296,6 @@ def getMostWatchedRatings(df: pd.DataFrame) -> pd.DataFrame:
                            .sort_values(by= ['Watchtime (hrs)'], ascending = False))
     
     return sum_watched_ratings
-
-# Create bar graph for Top 3 Most watched movie/tv show ratings 
-def createMostWatchedRatingsGraph(df: pd.DataFrame):
-    mostWatchedRatingsDf = getMostWatchedRatings(df)
-
-    mostWatchedRatingsDf = mostWatchedRatingsDf.drop(mostWatchedRatingsDf[mostWatchedRatingsDf['Rating'] == 'Unknown'].index)
-
-    chart = px.bar(mostWatchedRatingsDf.head(10), x= 'Rating', y = 'Watchtime (hrs)',
-                labels={'Rating': 'Content Rating'},
-                title = 'Most Watched Movie/TV Show Ratings')
-    
-    chart.update_xaxes(title_font = {"size": 16})
-    chart.update_yaxes(tick0 = 0, rangemode="tozero", title_font = {"size": 16})
-    chart.update_layout(title={
-        'x':0.5,
-        'xanchor': 'center',
-        'yanchor': 'top',
-        'font': {'size': 20}})
-
-    # chart.show()
-
-    return chart
 
 # Get most watched ratings data
 def getMostWatchedRatingsData(df: pd.DataFrame) -> dict:
@@ -171,15 +313,6 @@ def getMostWatchedRatingsData(df: pd.DataFrame) -> dict:
     # return {'ratings' : ratings_list,
     #         'watchtime': watchtime_list}
 
-# Get total watchtime per Netflix title
-def getFilteredTitleWatchtime(df: pd.DataFrame) -> pd.DataFrame:
-    filtered_title_df = df[['New Title', 'Watchtime (hrs)']]
-    sum_title_watchtime_df = (filtered_title_df.groupby(by = ['New Title'], as_index=False)
-                        .sum()
-                        .sort_values(by= ['Watchtime (hrs)'], ascending= False)
-                        .rename(columns={'Watchtime (hrs)': 'Total Watchtime (hrs)'}))
-    return sum_title_watchtime_df
-
 def getTitleWatchtime(df: pd.DataFrame) -> pd.DataFrame:
     filtered_title_df = df[['Title', 'Watchtime (hrs)']]
     sum_title_watchtime_df = (filtered_title_df.groupby(by = ['Title'], as_index=False)
@@ -187,26 +320,6 @@ def getTitleWatchtime(df: pd.DataFrame) -> pd.DataFrame:
                         .sort_values(by= ['Watchtime (hrs)'], ascending= False)
                         .rename(columns={'Watchtime (hrs)': 'Total Watchtime (hrs)'}))
     return sum_title_watchtime_df
-
-# Create bar graph for Top 10 Most watched netflix titles 
-def createTotalTitleWatchtimeGraph(df: pd.DataFrame):
-    totalTitleWatchtimeDf = getFilteredTitleWatchtime(df)
-
-    totalTitleWatchtimeDf = totalTitleWatchtimeDf.drop(totalTitleWatchtimeDf[totalTitleWatchtimeDf['New Title'] == 'Unknown'].index)
-
-    chart = px.bar(totalTitleWatchtimeDf.head(10), x= 'New Title', y = 'Total Watchtime (hrs)',
-                labels={'New Title': 'Netflix Title'},
-                title = 'Top 10 Most Watched Netflix Titles', hover_name='New Title')
-    
-    chart.update_xaxes(title_font = {"size": 16})
-    chart.update_yaxes(tick0 = 0, rangemode="tozero", title_font = {"size": 16})
-    chart.update_layout(title={
-        'x':0.5,
-        'xanchor': 'center',
-        'yanchor': 'top',
-        'font': {'size': 20}})
-
-    return chart
 
 # Get Total Title Watchtime Data
 def getTotalTitleWatchtimeData(df: pd.DataFrame) -> dict:
@@ -235,33 +348,6 @@ def getTotalTypeWatchtime(df: pd.DataFrame) -> pd.DataFrame:
                             .rename(columns = {'Watchtime (hrs)': 'Total Watchtime (hrs)'}))
     return sum_type_watchtime_df
 
-# Create pie graph for difference in watchtime for media types watched
-def createTotalTypeWatchtimeGraph(df: pd.DataFrame):
-    totalTypeWatchtimeDf = getTotalTypeWatchtime(df)
-
-    totalTypeWatchtimeDf = totalTypeWatchtimeDf.drop(totalTypeWatchtimeDf[totalTypeWatchtimeDf['Type'] == 'Unknown'].index)
-
-    chart = px.pie(totalTypeWatchtimeDf, names= 'Type', values= 'Total Watchtime (hrs)', color='Type', 
-               labels={'Total Watchtime (hrs)': 'Hours Watched (hrs)', 'Type': 'Media Type'},
-               title = 'Types of Media Watched')
-    
-    chart.update_traces(textfont_size=18, textfont_color= 'white')
-    
-    chart.update_layout(title={
-        'x':0.5,
-        'xanchor': 'center',
-        'yanchor': 'top',
-        'font': {'size': 24}}, 
-        legend={'x': 0.9,
-                'xanchor': 'center',
-                'y': 0.5, 
-                'yanchor': 'middle',
-                'font': {'size': 16}})
-
-    # chart.show()
-
-    return chart
-
 def getTotalTypeWatchtimeData(df: pd.DataFrame) -> dict:
     types = getTotalTypeWatchtime(df)['Type'].tolist()
     total_watchtime = getTotalTypeWatchtime(df)['Total Watchtime (hrs)'].sum()
@@ -275,13 +361,6 @@ def getTotalTypeWatchtimeData(df: pd.DataFrame) -> dict:
         })
     return data
 
-# Get Total Netflix Watch Time Watched
-def getTotalWatchtime(df: pd.DataFrame) -> float:
-    total_hrs_watched = df['Watchtime (hrs)'].sum().round(2)
-
-    return total_hrs_watched
-
-
 # Get Netflix watchtime per month
 def getMonthlyWatchtime(df: pd.DataFrame) -> pd.DataFrame:
     filtered_df = df[['Month', 'Watchtime (hrs)']]
@@ -289,27 +368,6 @@ def getMonthlyWatchtime(df: pd.DataFrame) -> pd.DataFrame:
 
     return monthly_watchtime
 
-
-# Create Line Graph for Monthly Watchtime
-def createMonthlyWatchtimeGraph(df: pd.DataFrame):
-    monthlyWatchtime = getMonthlyWatchtime(df)
-    print(monthlyWatchtime)
-    chart = px.line(monthlyWatchtime, x = 'Month', y = 'Watchtime (hrs)', title = 'Netflix Hourly Watchtime per Month')
-    chart.update_xaxes(tick0=1, dtick=1, title_standoff = 25, title_font = {"size": 16},
-                       tickmode='array',
-                       tickvals=[1,2,3,4,5,6,7,8,9,10,11,12],
-                       ticktext=['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'],
-                       range=[1, 12])
-    chart.update_yaxes(tick0 = 0, title_standoff = 25, title_font = {"size": 16}, rangemode="tozero")
-    chart.update_layout(title={
-        'x':0.5,
-        'xanchor': 'center',
-        'yanchor': 'top',
-        'font': {'size': 20}})
-    
-    # chart.show()
-
-    return chart
 
 def getMonthlyWatchtimeData(df: pd.DataFrame) -> dict:
     months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
@@ -326,75 +384,3 @@ def getMonthlyWatchtimeData(df: pd.DataFrame) -> dict:
             'hrs': hrs
         })
     return data
-
-# Get Netflix watchtime per year
-def getYearlyWatchtime(df: pd.DataFrame) -> pd.DataFrame:
-    filtered_df = df[['Year', 'Watchtime (hrs)']]
-    yearly_watchtime = filtered_df.groupby(by=['Year'], as_index = False).sum()
-
-    return yearly_watchtime
-
-
-# Create Line Graph for Monthly Watchtime
-def createYearlyWatchtimeGraph(df: pd.DataFrame):
-    yearly_watchtime = getYearlyWatchtime(df)
-    chart = px.line(yearly_watchtime, x = 'Year', y = 'Watchtime (hrs)', title = 'Netflix Hourly Watchtime per Year')
-    chart.update_xaxes(tick0=1, dtick=1, title_standoff = 25, title_font = {"size": 16})
-    chart.update_yaxes(tick0 = 0, title_standoff = 25, title_font = {"size": 16}, rangemode="tozero")
-    chart.update_layout(title={
-        'x':0.5,
-        'xanchor': 'center',
-        'yanchor': 'top',
-        'font': {'size': 20}})
-    
-    # chart.show()
-
-    return chart
-
-def getYearlyWatchtimeData(df: pd.DataFrame) -> dict:
-    years = getYearlyWatchtime(df)['Year'].tolist()
-    watchtime = getYearlyWatchtime(df)['Watchtime (hrs)'].tolist()
-
-    data = []
-    
-    for i in range(len(years)):
-        data.append({
-            'year': years[i],
-            'hrs': watchtime[i]
-        })
-    
-    return data
-    # return {'years': years,
-    #         'watchtime': watchtime}
-
-# Number of Unique Titles Watched
-def getTotalUniqueTitlesWatched(df: pd.DataFrame) -> int:
-    return len(df['New Title'].unique())
-
-# Number of Unique Shows Watched
-def getNumOfUniqueShowsWatched(df: pd.DataFrame) -> int:
-    df = df[df["Type"] == "TV Show"]
-    return len(df['New Title'].unique())
-
-# Number of Unique Movies Watched
-def getNumOfUniqueMoviesWatched(df:pd.DataFrame) -> int:
-    df = df[df["Type"] == "Movie"]
-    return len(df['New Title'].unique())
-
-# Get Years of Data included
-def getYears(df: pd.DataFrame) -> list:
-    return df['Year'].unique().tolist()
-
-# Get Netflix Users
-def getUsers(df: pd.DataFrame) -> list:
-    return df['Profile Name'].unique().tolist()
-
-
-def filterUser(df, user):
-    df = df[df['Profile Name'] == user]
-    return df
-
-def filterYear(df, year):
-    
-    df = df[df['Year'] == int(year)]
-    return df

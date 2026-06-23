@@ -46,6 +46,17 @@ def _format_hour(hour):
     return f"{display_hour} {suffix}"
 
 
+def _daypart_for_hour(hour):
+    hour = int(hour)
+    if hour < 6:
+        return "Late night", 0
+    if hour < 12:
+        return "Morning", 1
+    if hour < 18:
+        return "Afternoon", 2
+    return "Evening", 3
+
+
 def _longest_date_streak(dates):
     if len(dates) == 0:
         return 0
@@ -708,9 +719,13 @@ def getVisualizationData(df: pd.DataFrame) -> dict:
     working_df["Day Of Week"] = working_df["Start Time"].dt.day_name()
     working_df["Day Index"] = working_df["Start Time"].dt.dayofweek
     working_df["Hour"] = working_df["Start Time"].dt.hour
+    working_df[["Daypart", "Daypart Index"]] = working_df["Hour"].apply(
+        lambda hour: pd.Series(_daypart_for_hour(hour))
+    )
     working_df["Month Label"] = working_df["Month"].apply(_month_label)
 
     day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    daypart_order = ["Late night", "Morning", "Afternoon", "Evening"]
 
     day_totals = (
         working_df.groupby(["Day Of Week", "Day Index"], as_index=False)["Watchtime (hrs)"]
@@ -735,6 +750,29 @@ def getVisualizationData(df: pd.DataFrame) -> dict:
             "hrs": _round_number(hour_lookup.get(hour, 0)),
         }
         for hour in range(24)
+    ]
+
+    daypart_totals = (
+        working_df.groupby(
+            ["Day Of Week", "Day Index", "Daypart", "Daypart Index"],
+            as_index=False,
+        )["Watchtime (hrs)"]
+        .sum()
+    )
+    daypart_lookup = {
+        (int(row["Day Index"]), int(row["Daypart Index"])): row["Watchtime (hrs)"]
+        for _, row in daypart_totals.iterrows()
+    }
+    daypart_by_day = [
+        {
+            "day": day,
+            "day_index": day_index,
+            "daypart": daypart,
+            "daypart_index": daypart_index,
+            "hrs": _round_number(daypart_lookup.get((day_index, daypart_index), 0)),
+        }
+        for day_index, day in enumerate(day_order)
+        for daypart_index, daypart in enumerate(daypart_order)
     ]
 
     calendar_totals = working_df.groupby("Date", as_index=False)["Watchtime (hrs)"].sum()
@@ -802,8 +840,10 @@ def getVisualizationData(df: pd.DataFrame) -> dict:
 
     return {
         "day_order": day_order,
+        "daypart_order": daypart_order,
         "day_of_week_heatmap": day_of_week,
         "hour_of_day_heatmap": hour_of_day,
+        "daypart_by_day_heatmap": daypart_by_day,
         "calendar_heatmap": calendar,
         "movie_show_by_month": movie_show_by_month,
         "watchtime_timeline": daily_timeline,
@@ -887,6 +927,21 @@ def getProfileComparisonData(dataframe: pd.DataFrame, selected_profile: str, yea
             "shared_titles": len(selected_titles & titles),
         })
 
+    profile_similarity_links = []
+    profile_names = sorted(profile_titles.keys())
+    for source_index, source_profile in enumerate(profile_names):
+        for target_profile in profile_names[source_index + 1:]:
+            source_titles = profile_titles[source_profile]
+            target_titles = profile_titles[target_profile]
+            union = source_titles | target_titles
+            shared_count = len(source_titles & target_titles)
+            profile_similarity_links.append({
+                "source": source_profile,
+                "target": target_profile,
+                "similarity": _round_number(shared_count / len(union) * 100 if union else 0),
+                "shared_titles": shared_count,
+            })
+
     household_timeline_df = (
         df.groupby(["Profile Name", "Month"], as_index=False)["Watchtime (hrs)"]
         .sum()
@@ -948,6 +1003,11 @@ def getProfileComparisonData(dataframe: pd.DataFrame, selected_profile: str, yea
         "shared_titles": sorted(shared_titles, key=lambda item: item["profile_count"], reverse=True)[:20],
         "unique_title_counts": sorted(unique_title_counts, key=lambda item: item["unique_titles"], reverse=True),
         "overlap_scores": sorted(overlap_scores, key=lambda item: item["overlap_score"], reverse=True),
+        "profile_similarity_links": sorted(
+            profile_similarity_links,
+            key=lambda item: item["similarity"],
+            reverse=True,
+        ),
         "most_unique_profile": most_unique_profile,
         "household_timeline": household_timeline,
         "radar_metrics": radar_rows,

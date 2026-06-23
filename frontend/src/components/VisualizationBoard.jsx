@@ -27,9 +27,52 @@ const dayOrder = [
   "Saturday",
   "Sunday",
 ];
+const daypartOrder = ["Late night", "Morning", "Afternoon", "Evening"];
+const daypartLabels = {
+  "Late night": "Late night<br>12 AM-5 AM",
+  Morning: "Morning<br>6 AM-11 AM",
+  Afternoon: "Afternoon<br>12 PM-5 PM",
+  Evening: "Evening<br>6 PM-11 PM",
+};
 const netflixRed = "#e50914";
 const ink = "#171717";
 const grid = "#e5e5e5";
+const slate = "#334155";
+const teal = "#0f766e";
+const amber = "#d97706";
+const indigo = "#4f46e5";
+const rose = "#be123c";
+const sky = "#0284c7";
+const categoricalPalette = [
+  netflixRed,
+  teal,
+  amber,
+  indigo,
+  rose,
+  sky,
+  "#65a30d",
+  "#7c3aed",
+  "#c2410c",
+  "#0891b2",
+];
+const calendarScale = [
+  [0, "#fffbeb"],
+  [0.35, "#fcd34d"],
+  [1, amber],
+];
+const timeWindowScale = [
+  [0, "#ecfeff"],
+  [0.35, "#67e8f9"],
+  [1, teal],
+];
+const streakScale = [
+  [0, "#f5f5f5"],
+  [0.49, "#f5f5f5"],
+  [0.5, "#c7d2fe"],
+  [0.74, "#c7d2fe"],
+  [0.75, indigo],
+  [1, indigo],
+];
 
 function hours(value) {
   return Number(value || 0);
@@ -125,52 +168,44 @@ function monthlyChartData(rows = []) {
   }));
 }
 
-function movieShowRows(rows = []) {
-  const types = [
-    ...new Set(
-      rows
-        .map((row) => row.type || "Unknown")
-        .filter((type) => type !== "Unknown"),
-    ),
-  ];
-  return types.map((type) => ({
-    type,
-    x: monthOrder,
-    y: monthOrder.map((month) => {
-      const match = rows.find(
-        (row) =>
-          (row.month || "").toLowerCase() === month.toLowerCase() &&
-          (row.type || "Unknown") === type,
-      );
-      return hours(match?.hrs);
-    }),
-  }));
+function movieShowSummaryRows(rows = []) {
+  const totals = new Map();
+  rows.forEach((row) => {
+    const type = row.type || "Unknown";
+    if (type === "Unknown") return;
+    totals.set(type, (totals.get(type) || 0) + hours(row.hrs));
+  });
+
+  return [...totals.entries()]
+    .map(([type, hrs]) => ({ type, hrs }))
+    .sort((a, b) => a.hrs - b.hrs);
 }
 
-function buildRadarData(rows = []) {
-  if (!rows.length) return [];
-  const metrics = [
-    ["watchtime_hours", "Watch time"],
-    ["unique_titles", "Titles"],
-    ["viewing_events", "Events"],
-    ["movie_hours", "Movies"],
-    ["show_hours", "Shows"],
-    ["active_days", "Active days"],
-  ];
-  const maxByMetric = Object.fromEntries(
-    metrics.map(([key]) => [
-      key,
-      Math.max(...rows.map((row) => hours(row[key])), 1),
-    ]),
-  );
+function daypartForHour(hour) {
+  const numericHour = Number(hour);
+  if (numericHour < 6) return "Late night";
+  if (numericHour < 12) return "Morning";
+  if (numericHour < 18) return "Afternoon";
+  return "Evening";
+}
 
-  return rows.map((row) => ({
-    type: "scatterpolar",
-    r: metrics.map(([key]) => (hours(row[key]) / maxByMetric[key]) * 100),
-    theta: metrics.map(([, label]) => label),
-    fill: "toself",
-    name: row.profile,
-  }));
+function buildDaypartHeatmap(rows = [], hourlyRows = []) {
+  if (rows.length) {
+    return dayOrder.map((day) =>
+      daypartOrder.map((daypart) => {
+        const match = rows.find(
+          (row) => row.day === day && row.daypart === daypart,
+        );
+        return hours(match?.hrs);
+      }),
+    );
+  }
+
+  const totals = Object.fromEntries(daypartOrder.map((daypart) => [daypart, 0]));
+  hourlyRows.forEach((row) => {
+    totals[daypartForHour(row.hour)] += hours(row.hrs);
+  });
+  return [daypartOrder.map((daypart) => totals[daypart])];
 }
 
 function buildSankeyData(rows = []) {
@@ -212,6 +247,84 @@ function buildSankeyData(rows = []) {
   });
 
   return { labels, source, target, value };
+}
+
+function buildProfileNetwork(comparisons = {}) {
+  const profiles = (comparisons.profile_watchtime || []).map((row) => row.profile);
+  if (profiles.length < 2) return null;
+
+  const links = comparisons.profile_similarity_links || [];
+  const radius = 1;
+  const nodes = profiles.map((profile, index) => {
+    const angle = (2 * Math.PI * index) / profiles.length - Math.PI / 2;
+    return {
+      profile,
+      x: Math.cos(angle) * radius,
+      y: Math.sin(angle) * radius,
+      watchtime: hours(
+        comparisons.profile_watchtime.find((row) => row.profile === profile)?.hrs,
+      ),
+      color: categoricalPalette[index % categoricalPalette.length],
+    };
+  });
+  const nodeByProfile = new Map(nodes.map((node) => [node.profile, node]));
+  const maxWatchtime = Math.max(...nodes.map((node) => node.watchtime), 1);
+  const linkTraces = links
+    .filter((link) => nodeByProfile.has(link.source) && nodeByProfile.has(link.target))
+    .map((link) => {
+      const source = nodeByProfile.get(link.source);
+      const target = nodeByProfile.get(link.target);
+      const similarity = hours(link.similarity);
+      return {
+        type: "scatter",
+        mode: "lines",
+        x: [source.x, target.x],
+        y: [source.y, target.y],
+        line: {
+          color: similarity > 0 ? `rgba(23, 23, 23, ${Math.min(0.75, 0.18 + similarity / 140)})` : "rgba(23, 23, 23, 0.12)",
+          width: Math.max(1, similarity / 18),
+        },
+        hoverinfo: "text",
+        text: `${link.source} + ${link.target}<br>${similarity.toFixed(1)}% similar<br>${link.shared_titles || 0} shared titles`,
+        showlegend: false,
+      };
+    });
+  const labelTrace = {
+    type: "scatter",
+    mode: "text",
+    x: links.map((link) => {
+      const source = nodeByProfile.get(link.source);
+      const target = nodeByProfile.get(link.target);
+      return source && target ? (source.x + target.x) / 2 : null;
+    }),
+    y: links.map((link) => {
+      const source = nodeByProfile.get(link.source);
+      const target = nodeByProfile.get(link.target);
+      return source && target ? (source.y + target.y) / 2 : null;
+    }),
+    text: links.map((link) => `${hours(link.similarity).toFixed(0)}%`),
+    textfont: { size: 12, color: ink },
+    hoverinfo: "skip",
+    showlegend: false,
+  };
+  const nodeTrace = {
+    type: "scatter",
+    mode: "markers+text",
+    x: nodes.map((node) => node.x),
+    y: nodes.map((node) => node.y),
+    text: nodes.map((node) => node.profile),
+    textposition: "bottom center",
+    marker: {
+      color: nodes.map((node) => node.color),
+      size: nodes.map((node) => Math.max(24, 24 + (node.watchtime / maxWatchtime) * 28)),
+      line: { color: "white", width: 2 },
+    },
+    hovertemplate: "%{text}<br>%{customdata:.2f} hrs watched<extra></extra>",
+    customdata: nodes.map((node) => node.watchtime),
+    showlegend: false,
+  };
+
+  return [...linkTraces, labelTrace, nodeTrace];
 }
 
 function buildTreemapData(rows = []) {
@@ -282,14 +395,14 @@ function CalendarHeatmap({
           {isStreakMode ? (
             <>
               <span><span className="mr-1.5 inline-block size-3 rounded-sm bg-neutral-100 align-middle" />No viewing</span>
-              <span><span className="mr-1.5 inline-block size-3 rounded-sm bg-red-200 align-middle" />Watched</span>
-              <span><span className="mr-1.5 inline-block size-3 rounded-sm bg-red-700 align-middle" />Streak day</span>
-              <span className="text-red-700">Best streak: {longestStreakDays} days</span>
+              <span><span className="mr-1.5 inline-block size-3 rounded-sm bg-indigo-200 align-middle" />Watched</span>
+              <span><span className="mr-1.5 inline-block size-3 rounded-sm bg-indigo-600 align-middle" />Streak day</span>
+              <span className="text-indigo-700">Best streak: {longestStreakDays} days</span>
             </>
           ) : (
             <>
-              <span><span className="mr-1.5 inline-block size-3 rounded-sm bg-red-50 align-middle" />Little or no watch time</span>
-              <span><span className="mr-1.5 inline-block size-3 rounded-sm bg-red-600 align-middle" />More watch time</span>
+              <span><span className="mr-1.5 inline-block size-3 rounded-sm bg-amber-50 align-middle" />Little or no watch time</span>
+              <span><span className="mr-1.5 inline-block size-3 rounded-sm bg-amber-600 align-middle" />More watch time</span>
             </>
           )}
         </div>
@@ -303,20 +416,7 @@ function CalendarHeatmap({
             text: hover,
             hovertemplate: "%{text}<extra></extra>",
             type: "heatmap",
-            colorscale: isStreakMode
-              ? [
-                  [0, "#f5f5f5"],
-                  [0.49, "#f5f5f5"],
-                  [0.5, "#fecaca"],
-                  [0.74, "#fecaca"],
-                  [0.75, "#b91c1c"],
-                  [1, "#b91c1c"],
-                ]
-              : [
-                  [0, "#fff5f5"],
-                  [0.35, "#fca5a5"],
-                  [1, netflixRed],
-                ],
+            colorscale: isStreakMode ? streakScale : calendarScale,
             zmin: 0,
             zmax: isStreakMode ? 2 : undefined,
             showscale: !isStreakMode,
@@ -348,14 +448,13 @@ export default function VisualizationBoard({ graphs }) {
   const topTitles = graphs?.total_title_watchtime || [];
   const monthly = monthlyChartData(graphs?.monthly_watchtime || []);
   const hourlyRows = visualizations.hour_of_day_heatmap || [];
-  const peakHourValue = Math.max(
-    ...hourlyRows.map((row) => hours(row.hrs)),
-    0,
-  );
-  const typeRows = movieShowRows(visualizations.movie_show_by_month || []);
-  const radarData = buildRadarData(
-    graphs?.profile_comparisons?.radar_metrics || [],
-  );
+  const daypartRows = visualizations.daypart_by_day_heatmap || [];
+  const daypartHeatmap = buildDaypartHeatmap(daypartRows, hourlyRows);
+  const daypartYLabels = daypartRows.length
+    ? dayOrder.map((day) => day.slice(0, 3))
+    : ["All days"];
+  const typeRows = movieShowSummaryRows(visualizations.movie_show_by_month || []);
+  const profileNetworkData = buildProfileNetwork(graphs?.profile_comparisons);
   const sankeyData = buildSankeyData(
     graphs?.profile_comparisons?.sankey_profile_genre_type || [],
   );
@@ -370,7 +469,7 @@ export default function VisualizationBoard({ graphs }) {
               type: "bar",
               x: monthly.map((row) => row.month),
               y: monthly.map((row) => row.hrs),
-              marker: { color: "#262626" },
+              marker: { color: slate },
               name: "Hours",
             },
             {
@@ -405,7 +504,7 @@ export default function VisualizationBoard({ graphs }) {
                 );
                 return hours(match?.hrs);
               }),
-              marker: { color: netflixRed },
+              marker: { color: teal },
               hovertemplate: "%{x}<br>%{y:.2f} hrs<extra></extra>",
             },
           ]}
@@ -436,31 +535,27 @@ export default function VisualizationBoard({ graphs }) {
         <Plot
           data={[
             {
-              type: "bar",
-              orientation: "h",
-              x: hourlyRows.map((row) => hours(row.hrs)),
-              y: hourlyRows.map((row) => row.label),
-              marker: {
-                color: hourlyRows.map((row) =>
-                  hours(row.hrs) === peakHourValue ? netflixRed : "#404040",
-                ),
-              },
-              hovertemplate: "%{y}<br>%{x:.2f} hrs<extra></extra>",
+              type: "heatmap",
+              z: daypartHeatmap,
+              x: daypartOrder.map((daypart) => daypartLabels[daypart]),
+              y: daypartYLabels,
+              colorscale: timeWindowScale,
+              zmin: 0,
+              colorbar: { title: { text: "Hours" } },
+              hovertemplate:
+                "%{y}<br>%{x}<br>%{z:.2f} hrs<extra></extra>",
             },
           ]}
-          layout={chartLayout("Your Peak Viewing Hours", {
-            height: 620,
-            margin: { t: 52, r: 48, b: 48, l: 88 },
+          layout={chartLayout("Peak Viewing Windows", {
+            height: 340,
+            margin: { t: 52, r: 72, b: 76, l: 64 },
             xaxis: {
-              title: { text: "Hours watched" },
-              gridcolor: grid,
+              showgrid: false,
               zeroline: false,
-              rangemode: "tozero",
               automargin: true,
             },
             yaxis: {
               autorange: "reversed",
-              tickangle: 0,
               showgrid: false,
               zeroline: false,
               automargin: true,
@@ -468,7 +563,7 @@ export default function VisualizationBoard({ graphs }) {
           })}
           config={{ displayModeBar: false, responsive: true }}
           useResizeHandler
-          style={{ width: "100%", height: "620px" }}
+          style={{ width: "100%", height: "340px" }}
         />
       </ChartCard>
 
@@ -487,17 +582,9 @@ export default function VisualizationBoard({ graphs }) {
               values: genreWatchtime.map((row) => hours(row.hrs)),
               hole: 0.58,
               marker: {
-                colors: [
-                  "#e50914",
-                  "#262626",
-                  "#f97316",
-                  "#14b8a6",
-                  "#6366f1",
-                  "#84cc16",
-                  "#f43f5e",
-                  "#0ea5e9",
-                ],
+                colors: categoricalPalette,
               },
+              domain: { x: [0, 0.72], y: [0, 1] },
               textinfo: "percent",
               textposition: "inside",
               insidetextorientation: "horizontal",
@@ -507,15 +594,15 @@ export default function VisualizationBoard({ graphs }) {
           layout={chartLayout("Your Genre Mix", {
             height: 460,
             showlegend: true,
-            margin: { t: 56, r: 20, b: 120, l: 20 },
+            margin: { t: 56, r: 118, b: 48, l: 12 },
             legend: {
-              orientation: "h",
-              x: 0,
+              orientation: "v",
+              x: 0.86,
               xanchor: "left",
-              y: -0.18,
+              y: 0.98,
               yanchor: "top",
-              font: { size: 11 },
-              itemwidth: 30,
+              font: { size: 10 },
+              itemwidth: 24,
             },
             uniformtext: { minsize: 9, mode: "hide" },
           })}
@@ -527,19 +614,41 @@ export default function VisualizationBoard({ graphs }) {
 
       <ChartCard>
         <Plot
-          data={typeRows.map((row) => ({
-            type: "bar",
-            x: row.x,
-            y: row.y,
-            name: row.type,
-          }))}
-          layout={chartLayout("Movies vs TV by Month", {
-            height: 380,
-            barmode: "stack",
+          data={[
+            {
+              type: "bar",
+              orientation: "h",
+              x: typeRows.map((row) => row.hrs),
+              y: typeRows.map((row) => row.type),
+              marker: {
+                color: typeRows.map(
+                  (_, index) => categoricalPalette[index % categoricalPalette.length],
+                ),
+              },
+              text: typeRows.map((row) => `${row.hrs.toFixed(1)} hrs`),
+              textposition: "auto",
+              hovertemplate: "%{y}<br>%{x:.2f} hrs<extra></extra>",
+            },
+          ]}
+          layout={chartLayout("Movies vs TV Split", {
+            height: 340,
+            margin: { t: 52, r: 28, b: 48, l: 92 },
+            xaxis: {
+              title: { text: "Hours watched" },
+              gridcolor: grid,
+              zeroline: false,
+              rangemode: "tozero",
+              automargin: true,
+            },
+            yaxis: {
+              showgrid: false,
+              zeroline: false,
+              automargin: true,
+            },
           })}
           config={{ displayModeBar: false, responsive: true }}
           useResizeHandler
-          style={{ width: "100%", height: "100%" }}
+          style={{ width: "100%", height: "340px" }}
         />
       </ChartCard>
 
@@ -555,12 +664,21 @@ export default function VisualizationBoard({ graphs }) {
               y: (visualizations.watchtime_timeline || []).map((row) =>
                 hours(row.hrs),
               ),
-              line: { color: netflixRed, width: 2 },
+              line: { color: indigo, width: 2 },
               fill: "tozeroy",
-              fillcolor: "rgba(229, 9, 20, 0.12)",
+              fillcolor: "rgba(79, 70, 229, 0.14)",
             },
           ]}
-          layout={chartLayout("Your Viewing Timeline", { height: 340 })}
+          layout={chartLayout("Your Viewing Timeline", {
+            height: 340,
+            yaxis: {
+              title: { text: "Hours watched" },
+              gridcolor: grid,
+              zeroline: false,
+              rangemode: "tozero",
+              automargin: true,
+            },
+          })}
           config={{ displayModeBar: false, responsive: true }}
           useResizeHandler
           style={{ width: "100%", height: "100%" }}
@@ -575,7 +693,11 @@ export default function VisualizationBoard({ graphs }) {
               orientation: "h",
               x: [...topTitles].reverse().map((row) => hours(row.hrs)),
               y: [...topTitles].reverse().map((row) => row.title),
-              marker: { color: netflixRed },
+              marker: {
+                color: [...topTitles].reverse().map(
+                  (_, index) => categoricalPalette[index % categoricalPalette.length],
+                ),
+              },
               hovertemplate: "%{y}<br>%{x:.2f} hrs<extra></extra>",
             },
           ]}
@@ -589,16 +711,26 @@ export default function VisualizationBoard({ graphs }) {
         />
       </ChartCard>
 
-      {radarData.length ? (
+      {profileNetworkData ? (
         <ChartCard>
           <Plot
-            data={radarData}
-            layout={chartLayout("How Profiles Watch", {
+            data={profileNetworkData}
+            layout={chartLayout("Profile Similarity Map", {
               height: 430,
-              polar: {
-                radialaxis: { visible: true, range: [0, 100], ticksuffix: "%" },
+              margin: { t: 52, r: 20, b: 28, l: 20 },
+              xaxis: {
+                visible: false,
+                range: [-1.35, 1.35],
+                fixedrange: true,
               },
-              showlegend: true,
+              yaxis: {
+                visible: false,
+                range: [-1.25, 1.35],
+                scaleanchor: "x",
+                scaleratio: 1,
+                fixedrange: true,
+              },
+              showlegend: false,
             })}
             config={{ displayModeBar: false, responsive: true }}
             useResizeHandler
@@ -606,7 +738,7 @@ export default function VisualizationBoard({ graphs }) {
           />
         </ChartCard>
       ) : (
-        <EmptyChart title="How Profiles Watch" />
+        <EmptyChart title="Profile Similarity Map" />
       )}
 
       {SHOW_DEFERRED_VISUALIZATIONS && (

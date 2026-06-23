@@ -151,7 +151,7 @@ export default function Profile() {
                     setActiveSection(section.key);
                     setMessage("");
                   }}
-                  className={`flex items-center gap-2 px-3 py-2 text-left text-sm font-medium transition-colors ${
+                  className={`flex cursor-pointer items-center gap-2 px-3 py-2 text-left text-sm font-medium transition-colors ${
                     isActive
                       ? "bg-black text-white"
                       : "text-neutral-700 hover:bg-neutral-100"
@@ -181,7 +181,7 @@ export default function Profile() {
               {activeSection === "password"
                 ? "Change your password and sign in again with the new credentials."
                 : activeSection === "data"
-                ? "This clears your uploads, saved profiles, and generated viewing events from the database."
+                ? "This clears your saved viewing history, profiles, and recap results."
                 : "This permanently removes your account and all account-owned data."}
             </p>
           </div>
@@ -236,7 +236,7 @@ export default function Profile() {
               <button
                 type="submit"
                 disabled={submitting}
-                className="rounded bg-black px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded cursor-pointer bg-black px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {submitting ? "Saving..." : "Change password"}
               </button>
@@ -278,7 +278,7 @@ export default function Profile() {
               <button
                 type="submit"
                 disabled={submitting}
-                className="rounded bg-black px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded cursor-pointer bg-black px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {submitting ? "Removing..." : "Wipe saved data"}
               </button>
@@ -320,7 +320,7 @@ export default function Profile() {
               <button
                 type="submit"
                 disabled={submitting}
-                className="rounded bg-red-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded bg-red-600 cursor-pointer px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {submitting ? "Deleting..." : "Delete account"}
               </button>

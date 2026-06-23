@@ -17,12 +17,12 @@ function StatCard({ icon: Icon, label, value, detail }) {
   return (
     <div className="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
       <div className="mb-3 flex items-center justify-between gap-3">
-        <p className="text-sm font-semibold text-neutral-500">{label}</p>
+        <p className="text-sm font-bold text-neutral-900">{label}</p>
         <div className="flex size-9 items-center justify-center rounded-md bg-red-50 text-red-600">
           <Icon className="size-4" />
         </div>
       </div>
-      <p className="text-2xl font-black tracking-normal text-neutral-950">
+      <p className="break-words text-xl font-black tracking-normal text-neutral-950 sm:text-2xl">
         {value ?? fallback}
       </p>
       {detail && <p className="mt-2 text-sm text-neutral-500">{detail}</p>}

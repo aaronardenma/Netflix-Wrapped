@@ -1,41 +1,115 @@
 # Netflix Wrapped
 
-Netflix Wrapped is a web app for turning your Netflix viewing history export into a personal recap. Upload the `ViewingActivity.csv` file from Netflix, choose a profile and year, and the app generates watch-time stats, charts, profile comparisons, genre insights, title-level insights, and shareable Wrapped-style cards.
+Netflix Wrapped turns a Netflix viewing history export into a personal recap. It parses viewing activity by profile and year, generates watch-time insights, visualizations, title-level stats, Wrapped-style highlight cards, and personalized recommendations.
 
-Netflix data can be requested from Netflix at <https://www.netflix.com/account/getmyinfo>. Netflix also documents the export process on its help page: <https://help.netflix.com/en/node/100624>.
+Netflix data can be requested from <https://www.netflix.com/account/getmyinfo>. Netflix's export help page is available at <https://help.netflix.com/en/node/100624>.
 
-## What The App Does
+## Features
 
-- Accepts Netflix viewing activity CSV uploads.
-- Extracts profiles, viewing events, titles, dates, durations, and yearly recap data.
-- Stores authenticated user uploads and generated viewing data in PostgreSQL.
-- Supports anonymous one-session CSV analysis for quick recaps.
-- Uses Redis and RQ to return a fast first recap, then backfill heavier insights in the background.
-- Generates interactive frontend views for overall stats, profile/year selection, profile comparisons, genre/content insights, title-level analysis, visualizations, and recommendations.
-- Provides account features including registration, login, password changes, account data wipe, and account deletion.
+- Profile and year recaps from Netflix `ViewingActivity.csv` exports
+- Anonymous one-session recaps and saved recaps for logged-in users
+- Fast first-year processing with Redis/RQ backfill for heavier sections
+- Overview stats, title insights, genre/content insights, profile comparisons, and visualizations
+- Wrapped-style highlight cards
+- Personalized recommendations for logged-in users
+- TMDB/OMDB-ready metadata enrichment and cached title metadata
+- Account registration, login, password change, account data wipe, and account deletion
+- Health checks and request logging for local debugging and deployment
 
 ## Tech Stack
 
-- React 18 and Vite frontend
-- Tailwind CSS UI styling
-- Axios API client
-- Django 5 backend
-- Django REST Framework
+- Frontend: React 18, Vite, Tailwind CSS, Axios, Plotly
+- Backend: Django 5, Django REST Framework, PostgreSQL
+- Jobs/cache: Redis, Django RQ
+- Data/recommendations: pandas, NumPy, scikit-learn
+- Local tooling: Makefile, Docker Compose
+
+## Project Layout
+
+```text
+backend/                 Django API, data processing, jobs, notebooks
+frontend/                React/Vite app
+backend/notebooks/       Recommender workflow and evaluation notebooks
+backend/REDIS_WORKFLOW.md
+backend/RECOMMENDER_WORKFLOW.md
+compose.yaml             Lightweight Docker frontend/backend startup
+Makefile                 Local development commands
+```
+
+## Quick Start
+
+The smoothest local workflow is the Makefile-based setup. It starts Redis, the Django server, the RQ worker, and Vite from your local environment.
+
+### Prerequisites
+
+- Python virtual environment at `backend/.venv`
+- Node.js and npm
 - PostgreSQL
-- Redis and Django RQ for background recap work
-- pandas, NumPy, and scikit-learn for backend data processing and recommendations
-- Plotly for frontend visualizations
-- Docker Compose for local app startup
+- Redis, usually installed with `brew install redis` on macOS
+
+### Environment Files
+
+Create local env files from the examples:
+
+```bash
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env
+```
+
+Update `backend/.env` with your PostgreSQL credentials. `TMDB_API_KEY` and `OMDB_API_KEY` are optional, but metadata enrichment and recommendation quality improve when TMDB is configured.
+
+### Install And Start
+
+```bash
+make setup-dev
+make migrate
+make dev
+```
+
+Open the Vite app at:
+
+```text
+http://localhost:5173
+```
+
+The Django API runs at:
+
+```text
+http://localhost:8000
+```
+
+## Common Commands
+
+```bash
+make help          # Show available commands
+make setup         # Install backend runtime dependencies
+make setup-dev     # Install runtime + notebook/dev dependencies
+make migrate       # Apply Django migrations
+make backend       # Start Redis, RQ worker, and Django
+make frontend      # Start Vite
+make dev           # Start Redis, RQ worker, Django, and Vite
+make health        # Check backend database/cache/RQ health
+make check         # Run Django system checks
+make test          # Run backend tests
+make deploy-check  # Run backend checks/tests and frontend build
+make eval-recs     # Execute the recommender benchmark notebook
+```
+
+Use JSON backend logs when you want structured request output:
+
+```bash
+make dev-json
+```
 
 ## Processing Workflow
 
-Uploads are optimized for a fast first result:
+Uploads are optimized for a quick first result:
 
-1. Django validates the viewing history and extracts available profiles/years.
+1. Django validates the viewing history and extracts profiles/years.
 2. The backend generates a lightweight recap for the default profile's most recent year.
-3. The frontend redirects to `/recap` using the returned profile, year, and job ID.
-4. A Redis/RQ worker fills in heavier sections such as profile comparisons, content insights, visualizations, and remaining years.
-5. For logged-in users, the worker also persists viewing history to PostgreSQL and warms personalized recommendations.
+3. The frontend redirects to the recap page with the returned profile, year, and job ID.
+4. The Redis/RQ worker fills heavier sections in the background, including content insights, profile comparisons, visualizations, and remaining years.
+5. Logged-in users get persisted viewing history, saved recaps, and warmed recommendations.
 
 See [backend/REDIS_WORKFLOW.md](backend/REDIS_WORKFLOW.md) for the detailed backend flow.
 
@@ -47,133 +121,68 @@ The current recommender:
 
 - weights recent viewing more heavily than older history
 - generates profile-specific scoring hyperparameters
-- scores unseen candidates using content similarity plus structured affinity signals
+- scores unseen candidates using content similarity and structured affinity signals
 - diversifies results by genre, language, origin country, media type, and release era
-- uses recommendation feedback to filter or boost future picks
-- stores generated playlists so they can be reused and refreshed
+- stores user feedback to filter or boost future picks
+- caches generated playlists for reuse and refresh
 
 Recommendations may include titles that are not currently available on Netflix in your region.
 
-See [backend/RECOMMENDER_WORKFLOW.md](backend/RECOMMENDER_WORKFLOW.md) for the detailed recommendation generation flow, current capabilities, and future roadmap.
+See [backend/RECOMMENDER_WORKFLOW.md](backend/RECOMMENDER_WORKFLOW.md) for the recommendation generation flow, current capabilities, and roadmap.
 
-## Launch With Docker
+## Recommender Evaluation
 
-### Prerequisites
-
-- Docker Desktop or Docker Engine with Docker Compose
-- A local PostgreSQL database running on your machine
-- A backend environment file at `backend/.env`
-
-The Docker Compose setup runs the backend and frontend containers, but it does not create a PostgreSQL container. The backend container connects to PostgreSQL on your host machine through `host.docker.internal`.
-
-### 1. Create The Database
-
-Create a local PostgreSQL database for the app. The default database name used by Django is:
+Run the benchmark notebook from the repo root:
 
 ```bash
-netflixwrapped
+make eval-recs
 ```
 
-You can use another database name as long as it matches `POSTGRESQL_DB` in `backend/.env`.
+The executed notebook and result exports are ignored by git:
 
-### 2. Configure Backend Environment Variables
-
-Create or update `backend/.env` with your local settings:
-
-```env
-SECRET_KEY=replace-with-a-local-development-secret
-DEBUG=True
-POSTGRESQL_DB=netflixwrapped
-POSTGRESQL_USER=your-postgres-user
-POSTGRESQL_PASSWORD=your-postgres-password
-POSTGRESQL_HOST=localhost
-POSTGRESQL_PORT=5432
-FRONTEND_URL=http://localhost:3000
-REDIS_URL=redis://127.0.0.1:6379/0
-TMDB_API_KEY=optional-tmdb-api-key
-LOG_LEVEL=INFO
-LOG_FORMAT=text
+```text
+backend/notebooks/recommender_evaluation_workflow.executed.ipynb
+backend/notebooks/results/
 ```
 
-The compose file overrides `POSTGRESQL_HOST` to `host.docker.internal` inside the backend container, so keep your normal local host value in `.env`.
+The notebook exports raw metrics, profile diagnostics, inspection rows, and compact best-model summaries:
 
-### 3. Build And Start The App
+- best by recall
+- best by metadata fit
+- diagnostics for profiles with weak candidate coverage or missing metadata
 
-From the repository root, run:
+## Docker
+
+Docker Compose is available for a lightweight frontend/backend startup:
 
 ```bash
 docker compose up --build
 ```
 
-Docker Compose will:
+It starts:
 
-- build the Django backend image from `backend/Dockerfile`
-- install Python dependencies from `backend/requirements.txt`
-- run Django migrations
-- start the backend at `http://localhost:8000`
-- build the React frontend from `frontend/Dockerfile`
-- serve the frontend through nginx at `http://localhost:3000`
+- Django at `http://localhost:8000`
+- nginx-served frontend at `http://localhost:3000`
 
-### 4. Open The App
+Current Docker limitations:
 
-Visit:
+- PostgreSQL is expected to run on your host machine.
+- The backend container connects to host PostgreSQL through `host.docker.internal`.
+- The compose file does not start Redis or an RQ worker.
 
-```text
-http://localhost:3000
-```
+For the full background processing workflow, prefer `make dev` locally or add Redis and worker services to compose before relying on Docker for complete recap processing.
 
-The frontend sends API requests to:
-
-```text
-http://localhost:8000
-```
-
-### 5. Stop The App
-
-Press `Ctrl+C` in the Docker Compose terminal, then run:
+Stop the Docker stack with:
 
 ```bash
 docker compose down
 ```
 
-## Local Development Without Docker
+## Deployment
 
-Backend:
+Use Vercel for the React frontend. Deploy Django separately on a host that supports a persistent web process, PostgreSQL, Redis, and an RQ worker, such as Render, Railway, Fly.io, a Heroku-style platform, or a VPS. Vercel serverless functions are not a good fit for the current Django/RQ worker setup.
 
-```bash
-make setup
-make migrate
-make backend
-```
-
-Notebook and evaluation tools:
-
-```bash
-make setup-dev
-```
-
-Frontend:
-
-```bash
-make frontend
-```
-
-Or run Redis, the RQ worker, Django, and Vite together:
-
-```bash
-make dev
-```
-
-The Vite dev server usually runs at `http://localhost:5173`. The production Docker frontend runs at `http://localhost:3000`.
-
-## Deploy With Vercel
-
-Use Vercel for the React frontend. The Django backend should run on a host that
-supports a persistent web process, PostgreSQL, Redis, and an RQ worker, such as
-Render, Railway, Fly.io, Heroku-style platforms, or your own VPS. Vercel
-serverless functions are not a good fit for the current Django/RQ worker setup.
-
-### 1. Deploy The Backend First
+### Backend
 
 Provision:
 
@@ -182,7 +191,7 @@ Provision:
 - one Django web process
 - one RQ worker process running `python manage.py rqworker recaps`
 
-Set backend environment variables:
+Set production backend environment variables:
 
 ```env
 SECRET_KEY=replace-with-production-secret
@@ -201,7 +210,7 @@ LOG_LEVEL=INFO
 LOG_FORMAT=json
 ```
 
-After deploying backend code, run:
+After deploying backend code:
 
 ```bash
 python manage.py migrate
@@ -214,48 +223,51 @@ Confirm the backend is reachable:
 https://your-backend-domain.example.com/api/observability/health/
 ```
 
-### 2. Create The Vercel Project
+### Vercel Frontend
 
 In Vercel:
 
 - Import the GitHub repository.
 - Set the project root directory to `frontend`.
-- Use framework preset `Vite`.
+- Use the Vite framework preset.
 - Use install command `npm install`.
 - Use build command `npm run build`.
 - Use output directory `dist`.
 
-Set Vercel environment variables:
+Set the frontend environment variable:
 
 ```env
 VITE_API_BASE_URL=https://your-backend-domain.example.com
 ```
 
-The file `frontend/vercel.json` rewrites all frontend routes to
-`index.html`, which allows direct visits to React Router routes such as
-`/recap`, `/create`, and `/auth/login`.
+`frontend/vercel.json` rewrites frontend routes to `index.html`, so direct visits to React Router routes such as `/recap`, `/create`, and `/auth/login` work correctly.
 
-### 3. Update Backend Origins After Vercel Assigns A Domain
-
-Once Vercel gives you the final production URL, update the backend:
+After Vercel assigns the final frontend domain, update the backend:
 
 ```env
 FRONTEND_URL=https://your-production-frontend-domain
 FRONTEND_ORIGINS=https://your-production-frontend-domain
 ```
 
-If you use both a Vercel preview URL and a custom domain, provide a comma-separated list:
+If you use both a Vercel preview URL and a custom domain, use a comma-separated list:
 
 ```env
 FRONTEND_ORIGINS=https://your-app.vercel.app,https://www.your-custom-domain.com
 ```
 
-Restart the backend after changing those values. This is required for CORS,
-CSRF, and secure cookie-based auth to work from the Vercel frontend.
+Restart the backend after changing frontend origins. CORS, CSRF, and secure cookie-based auth depend on those values.
 
 ## Observability
 
-The backend emits request logs with an `X-Request-ID` response header, request path, status code, and latency. Set `LOG_FORMAT=json` for structured logs that are easier to ship into a log collector.
+The backend emits request logs with:
+
+- request ID
+- path
+- method
+- status code
+- latency
+
+Set `LOG_FORMAT=json` for structured logs. Every response includes an `X-Request-ID` header.
 
 Health and runtime checks are available at:
 
@@ -264,3 +276,20 @@ http://localhost:8000/api/observability/health/
 ```
 
 The health response includes database, cache, RQ queue, and recent recap job state. A degraded response usually means Redis, PostgreSQL, or the RQ worker is not available.
+
+## Troubleshooting
+
+If recap generation starts but heavier sections do not fill in, check that Redis is running and the RQ worker is active:
+
+```bash
+make redis-status
+make backend
+```
+
+If tests cannot connect to PostgreSQL, confirm the local database is running and that `backend/.env` has valid `POSTGRESQL_*` values.
+
+If frontend requests fail in local dev, confirm `frontend/.env` points at the Django API:
+
+```env
+VITE_API_BASE_URL=http://localhost:8000
+```

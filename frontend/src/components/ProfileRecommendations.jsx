@@ -113,6 +113,32 @@ function RecommendationCard({ recommendation }) {
   );
 }
 
+function TopSignalChips({ summary }) {
+  if (!summary) return null;
+
+  const signals = [
+    ["Genre", summary.top_genres?.[0]?.value],
+    ["Language", summary.top_languages?.[0]?.value?.toUpperCase()],
+    ["Format", summary.top_media_types?.[0]?.value === "tv" ? "TV" : summary.top_media_types?.[0]?.value],
+    ["Origin", summary.top_countries?.[0]?.value],
+  ].filter(([, value]) => value);
+
+  if (!signals.length) return null;
+
+  return (
+    <div className="mt-4 flex flex-wrap gap-2">
+      {signals.map(([label, value]) => (
+        <span
+          key={label}
+          className="border border-neutral-200 bg-neutral-50 px-2.5 py-1 text-xs font-black uppercase text-neutral-600"
+        >
+          {label}: <span className="text-neutral-950">{value}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export default function ProfileRecommendations({ profile, isAuthenticated }) {
   const queryClient = useQueryClient();
   const queryKey = ["profileRecommendations", profile];
@@ -199,9 +225,13 @@ export default function ProfileRecommendations({ profile, isAuthenticated }) {
           <p className="mt-2 max-w-3xl text-sm font-semibold leading-6 text-neutral-600">
             Personalized recommendations based on your recent viewing patterns.
           </p>
+          <TopSignalChips summary={data?.profile_summary} />
           {data && (
             <p className="mt-2 text-xs font-bold text-neutral-500">
               Viewing period: {formatPeriod(data.period_start, data.period_end)}
+              {data.profile_summary?.candidate_count
+                ? ` • ${data.profile_summary.candidate_count} candidates considered`
+                : ""}
             </p>
           )}
         </div>

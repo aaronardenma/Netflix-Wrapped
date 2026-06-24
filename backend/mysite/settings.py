@@ -34,6 +34,8 @@ TMDB_ENRICHMENT_MAX_CALLS = int(os.getenv("TMDB_ENRICHMENT_MAX_CALLS", "100"))
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 RUNNING_TESTS = "test" in sys.argv
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+LOG_FORMAT = os.getenv("LOG_FORMAT", "text")
 
 
 def env_bool(name, default=False):
@@ -77,6 +79,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',  # Add this first
+    'api.observability.RequestLogMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     
@@ -229,3 +232,49 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:8000",
 ]
 CORS_ALLOW_CREDENTIALS = True
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "filters": {
+        "request_context": {
+            "()": "api.observability.RequestContextFilter",
+        },
+    },
+    "formatters": {
+        "text": {
+            "format": "%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s",
+        },
+        "json": {
+            "()": "api.observability.JsonLogFormatter",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "filters": ["request_context"],
+            "formatter": "json" if LOG_FORMAT == "json" else "text",
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": LOG_LEVEL,
+    },
+    "loggers": {
+        "api": {
+            "handlers": ["console"],
+            "level": LOG_LEVEL,
+            "propagate": False,
+        },
+        "utils": {
+            "handlers": ["console"],
+            "level": LOG_LEVEL,
+            "propagate": False,
+        },
+        "django.request": {
+            "handlers": ["console"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+    },
+}

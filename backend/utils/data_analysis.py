@@ -1,7 +1,9 @@
 import pandas as pd
 import os
 import json
+import logging
 import string
+from time import perf_counter
 
 from utils.workflows import (
     K_NETFLIX_TITLES,
@@ -15,10 +17,12 @@ from utils.workflows import (
     getTotalTypeWatchtimeData,
     preprocessTitles,
 )
+from utils.recap_payload import DEFAULT_RECAP_SECTIONS, build_recap_payload
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 GRAPH_SCHEMA_VERSION = 5
 METADATA_OVERRIDES_CACHE = None
+logger = logging.getLogger(__name__)
 COUNTRY_CODE_LABELS = {
     "US": "United States",
     "KR": "South Korea",
@@ -1015,61 +1019,66 @@ def getProfileComparisonData(dataframe: pd.DataFrame, selected_profile: str, yea
     }
 
 def getJsonGraphData(dataframe, user, year, sections=None):
-    print(f"Received user: {user}, year: {year}")
-    print(f"Pre-filtered dataframe rows: {len(dataframe)}")
+    context = {
+        "profile": user,
+        "year": str(year),
+        "input_rows": len(dataframe),
+    }
+    total_start = perf_counter()
+    logger.info("recap generation started", extra=context)
 
-    # Since we're receiving pre-filtered data from ExtractCSVView,
-    # we can skip the filtering steps and just do the setup
-    
-    # Set up the dataframe (this should not filter, just transform)
+    setup_start = perf_counter()
     df = dataframeSetUp(dataframe)
-    print(f"After dataframeSetUp rows: {len(df)}")
-
-    # Skip filterUser and filterYear since data is already filtered
-    # in ExtractCSVView for performance
+    setup_ms = round((perf_counter() - setup_start) * 1000, 2)
+    logger.info(
+        "recap dataframe setup completed",
+        extra={**context, "output_rows": len(df), "elapsed_ms": setup_ms},
+    )
     
     if len(df) == 0:
         return {"error": "No data found after processing"}
 
-    # Apply transformations
+    transform_start = perf_counter()
     df = generateShowTitles(df)
     df = generateMediaType(df)
     df = generateRatings(df)
+    transform_ms = round((perf_counter() - transform_start) * 1000, 2)
+    logger.info(
+        "recap dataframe transforms completed",
+        extra={**context, "elapsed_ms": transform_ms},
+    )
 
-    requested_sections = set(sections or [
-        "total_title_watchtime",
-        "total_type_watchtime",
-        "monthly_watchtime",
-        "ratings_watchtime",
-        "core_stats",
-        "title_level_insights",
-        "wrapped_cards",
-        "genre_content_insights",
-        "visualizations",
-    ])
-    graphs = {"schema_version": GRAPH_SCHEMA_VERSION}
+    requested_sections = set(sections or DEFAULT_RECAP_SECTIONS)
+    builders = {
+        "total_title_watchtime": lambda: getTotalTitleWatchtimeData(df),
+        "total_type_watchtime": lambda: getTotalTypeWatchtimeData(df),
+        "monthly_watchtime": lambda: getMonthlyWatchtimeData(df),
+        "ratings_watchtime": lambda: getMostWatchedRatingsData(df),
+        "core_stats": lambda: getCoreStatsData(df),
+        "title_level_insights": lambda: getTitleLevelInsightsData(df),
+        "wrapped_cards": lambda: getWrappedCardsData(df),
+        "genre_content_insights": lambda: getGenreContentInsightsData(df),
+        "visualizations": lambda: getVisualizationData(df),
+    }
     
     try:
-        if "total_title_watchtime" in requested_sections:
-            graphs["total_title_watchtime"] = getTotalTitleWatchtimeData(df)
-        if "total_type_watchtime" in requested_sections:
-            graphs["total_type_watchtime"] = getTotalTypeWatchtimeData(df)
-        if "monthly_watchtime" in requested_sections:
-            graphs["monthly_watchtime"] = getMonthlyWatchtimeData(df)
-        if "ratings_watchtime" in requested_sections:
-            graphs["ratings_watchtime"] = getMostWatchedRatingsData(df)
-        if "core_stats" in requested_sections:
-            graphs["core_stats"] = getCoreStatsData(df)
-        if "title_level_insights" in requested_sections:
-            graphs["title_level_insights"] = getTitleLevelInsightsData(df)
-        if "wrapped_cards" in requested_sections:
-            graphs["wrapped_cards"] = getWrappedCardsData(df)
-        if "genre_content_insights" in requested_sections:
-            graphs["genre_content_insights"] = getGenreContentInsightsData(df)
-        if "visualizations" in requested_sections:
-            graphs["visualizations"] = getVisualizationData(df)
-    except Exception as e:
-        print(f"Error generating graph data: {str(e)}")
-        return {"error": f"Failed to generate graph data: {str(e)}"}
+        graphs = {
+            "schema_version": GRAPH_SCHEMA_VERSION,
+            **build_recap_payload(builders, requested_sections, context=context),
+        }
+    except Exception as exc:
+        logger.exception(
+            "recap graph generation failed",
+            extra={**context, "sections": sorted(requested_sections)},
+        )
+        return {"error": f"Failed to generate graph data: {str(exc)}"}
+
+    graphs["_timings_ms"]["dataframe_setup"] = setup_ms
+    graphs["_timings_ms"]["dataframe_transforms"] = transform_ms
+    graphs["_timings_ms"]["total"] = round((perf_counter() - total_start) * 1000, 2)
+    logger.info(
+        "recap generation completed",
+        extra={**context, "elapsed_ms": graphs["_timings_ms"]["total"]},
+    )
     
     return graphs

@@ -38,6 +38,7 @@ const STAT_TABS = [
   { value: "visualizations", label: "Visualizations", icon: ChartNoAxesCombinedIcon },
   { value: "for-you", label: "For You", icon: SparklesIcon },
 ];
+const PARTIAL_PENDING_TABS = new Set(["compare", "content", "profiles", "visualizations"]);
 
 async function fetchStoredData() {
   const res = await netflixAPI.getStoredData();
@@ -342,6 +343,8 @@ export default function Statistics() {
   };
 
   const selectView = (nextView) => {
+    if (graphs?._partial && PARTIAL_PENDING_TABS.has(nextView)) return;
+
     const nextParams = new URLSearchParams(searchParams);
     if (nextView === "overview") {
       nextParams.delete("view");
@@ -352,6 +355,7 @@ export default function Statistics() {
   };
 
   const canFetchSelectedStats = !!profile && !!year && (!!jobId || isAuthenticated);
+  const isPartialRecap = Boolean(graphs?._partial);
   const isGeneratingSelectedStats =
     canFetchSelectedStats && !graphs && !error && (!selectedYearIsReady || isLoading);
   const showRecapSelector =
@@ -620,25 +624,50 @@ export default function Statistics() {
                 <div className="flex min-w-max gap-1">
                   {STAT_TABS.map(({ value, label, icon: Icon }) => {
                     const isSelected = activeView === value;
+                    const isFinishing = isPartialRecap && PARTIAL_PENDING_TABS.has(value);
                     return (
                       <button
                         key={value}
                         type="button"
+                        disabled={isFinishing}
                         onClick={() => selectView(value)}
                         aria-current={isSelected ? "page" : undefined}
-                        className={`inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-black transition sm:px-4 ${
+                        className={`inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-black transition disabled:cursor-not-allowed disabled:opacity-55 sm:px-4 ${
                           isSelected
                             ? "bg-red-600 text-white"
+                            : isFinishing
+                            ? "text-neutral-400"
                             : "text-neutral-700 hover:bg-red-50 hover:text-red-700"
                         }`}
                       >
                         <Icon className="size-4 shrink-0" />
-                        {label}
+                        <span>{label}</span>
+                        {isFinishing && (
+                          <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] uppercase text-neutral-500">
+                            Finishing
+                          </span>
+                        )}
                       </button>
                     );
                   })}
                 </div>
               </nav>
+
+              {isPartialRecap && PARTIAL_PENDING_TABS.has(activeView) && (
+                <section className="rounded-lg border border-amber-200 bg-amber-50 p-6 shadow-sm">
+                  <p className="text-sm font-bold uppercase text-amber-700">
+                    Finishing this section
+                  </p>
+                  <h3 className="mt-2 text-2xl font-black text-neutral-950">
+                    The first recap is ready. This tab is still being filled in.
+                  </h3>
+                  <p className="mt-3 max-w-2xl text-sm leading-6 text-neutral-700">
+                    Overview and title insights are available now. Profile comparisons,
+                    content insights, and visualizations will appear automatically after
+                    the worker completes the full recap.
+                  </p>
+                </section>
+              )}
 
               {activeView === "overview" && (
                 <>
@@ -646,7 +675,7 @@ export default function Statistics() {
                   <WrappedCards cards={graphs.wrapped_cards} profile={profile} year={year} />
                 </>
               )}
-              {activeView === "compare" && (
+              {!isPartialRecap && activeView === "compare" && (
                 comparableYears.length >= 2 ? (
                 <section className="rounded-lg border border-neutral-200 bg-white p-5 shadow-sm">
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -740,13 +769,13 @@ export default function Statistics() {
               {activeView === "titles" && (
                 <TitleLevelInsights insights={graphs.title_level_insights} />
               )}
-              {activeView === "content" && (
+              {!isPartialRecap && activeView === "content" && (
                 <GenreContentInsights insights={graphs.genre_content_insights} />
               )}
-              {activeView === "profiles" && (
+              {!isPartialRecap && activeView === "profiles" && (
                 <ProfileComparisons comparisons={graphs.profile_comparisons} />
               )}
-              {activeView === "visualizations" && (
+              {!isPartialRecap && activeView === "visualizations" && (
                 <VisualizationBoard graphs={graphs} />
               )}
               {activeView === "for-you" && (

@@ -11,6 +11,8 @@ from django.utils import timezone
 
 ANONYMOUS_CACHE_TTL_SECONDS = 60 * 60 * 24
 ANONYMOUS_CSV_TTL_SECONDS = 60 * 60 * 24
+RECENT_PROCESSING_JOBS_CACHE_KEY = "recent_processing_jobs"
+RECENT_PROCESSING_JOB_LIMIT = 25
 USABLE_YEAR_STATUSES = {"ready", "partial_ready"}
 
 
@@ -68,6 +70,8 @@ def create_processing_state(
         "failed": 0,
         "percent": 100 if total == 0 or status_value == "ready" else 0,
         "expires_at": expires_at.isoformat() if expires_at else None,
+        "worker_started_at": None,
+        "worker_finished_at": None,
     }
 
 
@@ -81,6 +85,47 @@ def set_processing_state(
     timeout=ANONYMOUS_CACHE_TTL_SECONDS,
 ):
     cache.set(processing_state_key(job_id), state, timeout=timeout)
+    remember_processing_job(job_id)
+
+
+def remember_processing_job(job_id):
+    recent_jobs = cache.get(RECENT_PROCESSING_JOBS_CACHE_KEY) or []
+    recent_jobs = [job for job in recent_jobs if job != job_id]
+    recent_jobs.insert(0, job_id)
+    cache.set(
+        RECENT_PROCESSING_JOBS_CACHE_KEY,
+        recent_jobs[:RECENT_PROCESSING_JOB_LIMIT],
+        timeout=ANONYMOUS_CACHE_TTL_SECONDS,
+    )
+
+
+def recent_processing_jobs(limit=10):
+    job_ids = (cache.get(RECENT_PROCESSING_JOBS_CACHE_KEY) or [])[:limit]
+    jobs = []
+    for job_id in job_ids:
+        state = get_processing_state(job_id)
+        if state:
+            jobs.append(processing_status_payload(job_id, state))
+            continue
+
+        cached_status = cache.get(job_status_key(job_id))
+        if cached_status == "completed":
+            jobs.append(
+                processing_status_payload(
+                    job_id,
+                    {"percent": 100},
+                    status_value="completed",
+                )
+            )
+        elif isinstance(cached_status, str) and cached_status.startswith("error:"):
+            jobs.append(
+                processing_status_payload(
+                    job_id,
+                    status_value="error",
+                    error=cached_status[6:],
+                )
+            )
+    return jobs
 
 
 def update_processing_state(
@@ -90,6 +135,8 @@ def update_processing_state(
     year_status=None,
     job_status=None,
     selected_profile=None,
+    worker_started_at=None,
+    worker_finished_at=None,
 ):
     lock_factory = getattr(cache, "lock", None)
     lock = (
@@ -107,6 +154,10 @@ def update_processing_state(
             state["status"] = job_status
         if selected_profile is not None:
             state["selected_profile"] = selected_profile
+        if worker_started_at is not None:
+            state["worker_started_at"] = worker_started_at
+        if worker_finished_at is not None:
+            state["worker_finished_at"] = worker_finished_at
         if profile_name is not None and year is not None and year_status:
             profile_state = state.setdefault("profiles", {}).setdefault(
                 profile_name,
@@ -167,6 +218,8 @@ def processing_status_payload(
         "failed": state.get("failed", 0),
         "percent": state.get("percent", 0),
         "expires_at": state.get("expires_at"),
+        "worker_started_at": state.get("worker_started_at"),
+        "worker_finished_at": state.get("worker_finished_at"),
     }
     if message:
         payload["message"] = message

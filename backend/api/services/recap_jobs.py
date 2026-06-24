@@ -1,4 +1,5 @@
 import logging
+from django.utils import timezone
 
 import django_rq
 from django.core.cache import cache
@@ -15,8 +16,10 @@ from api.services.recap_data import (
     filter_profile_year,
     profile_comparisons_from_dataframe,
 )
+from api.services.recommendations import RecommendationError, generate_recommendations
 from api.services.viewing_ingestion import ingest_viewing_dataframe
 from utils.data_analysis import getJsonGraphData
+from utils.recap_payload import HEAVY_RECAP_SECTIONS
 
 
 logger = logging.getLogger(__name__)
@@ -77,10 +80,33 @@ def process_authenticated_upload(job_id, owner, user_id, profile_years, source_f
     user = get_user_model().objects.get(id=user_id)
     ingest_viewing_dataframe(user, dataframe, source_filename=source_filename)
     process_anonymous_upload(job_id, owner, profile_years)
+    _warm_recommendations(user, profile_years)
+
+
+def _warm_recommendations(user, profile_years):
+    profiles = user.netflix_profiles.filter(name__in=profile_years.keys())
+    for profile in profiles:
+        try:
+            generate_recommendations(profile)
+        except RecommendationError:
+            logger.info(
+                "Recommendation warmup skipped for profile %s",
+                profile.name,
+                exc_info=True,
+            )
+        except Exception:
+            logger.exception(
+                "Recommendation warmup failed for profile %s",
+                profile.name,
+            )
 
 
 def process_anonymous_upload(job_id, owner, profile_years):
     try:
+        update_processing_state(
+            job_id,
+            worker_started_at=timezone.now().isoformat(),
+        )
         logger.info("Starting queued recap processing for job %s", job_id)
         _, dataframe = load_upload(owner, job_id)
         if dataframe is None:
@@ -120,7 +146,11 @@ def process_anonymous_upload(job_id, owner, profile_years):
             "completed",
             timeout=ANONYMOUS_CACHE_TTL_SECONDS,
         )
-        update_processing_state(job_id, job_status="completed")
+        update_processing_state(
+            job_id,
+            job_status="completed",
+            worker_finished_at=timezone.now().isoformat(),
+        )
         logger.info("Queued recap processing completed for job %s", job_id)
     except Exception as exc:
         logger.exception("Queued recap processing failed for job %s", job_id)
@@ -129,7 +159,11 @@ def process_anonymous_upload(job_id, owner, profile_years):
             f"error: {exc}",
             timeout=ANONYMOUS_CACHE_TTL_SECONDS,
         )
-        update_processing_state(job_id, job_status="error")
+        update_processing_state(
+            job_id,
+            job_status="error",
+            worker_finished_at=timezone.now().isoformat(),
+        )
         raise
 
 
@@ -161,6 +195,8 @@ def process_profile_year(
             profile_name,
             year,
         )
+        graph_data["_partial"] = False
+        graph_data["_full_ready_at"] = timezone.now().isoformat()
         graph_data["profile_comparisons"] = (
             profile_comparisons_from_dataframe(
                 dataframe,
@@ -217,6 +253,8 @@ def process_initial_profile_year(
         )
         graph_data["_partial"] = True
         graph_data["_sections_ready"] = INITIAL_RECAP_SECTIONS
+        graph_data["_sections_pending"] = sorted(HEAVY_RECAP_SECTIONS)
+        graph_data["_partial_ready_at"] = timezone.now().isoformat()
         cache.set(
             cache_key,
             graph_data,

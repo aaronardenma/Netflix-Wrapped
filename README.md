@@ -10,8 +10,9 @@ Netflix data can be requested from Netflix at <https://www.netflix.com/account/g
 - Extracts profiles, viewing events, titles, dates, durations, and yearly recap data.
 - Stores authenticated user uploads and generated viewing data in PostgreSQL.
 - Supports anonymous one-session CSV analysis for quick recaps.
-- Generates interactive frontend views for overall stats, profile/year selection, profile comparisons, genre/content insights, and title-level analysis.
-- Provides account features including registration, login, password reset, account data wipe, and account deletion.
+- Uses Redis and RQ to return a fast first recap, then backfill heavier insights in the background.
+- Generates interactive frontend views for overall stats, profile/year selection, profile comparisons, genre/content insights, title-level analysis, visualizations, and recommendations.
+- Provides account features including registration, login, password changes, account data wipe, and account deletion.
 
 ## Tech Stack
 
@@ -21,8 +22,38 @@ Netflix data can be requested from Netflix at <https://www.netflix.com/account/g
 - Django 5 backend
 - Django REST Framework
 - PostgreSQL
-- pandas, NumPy, Plotly, D3, and Recharts for data processing and visualization
+- Redis and Django RQ for background recap work
+- pandas, NumPy, and scikit-learn for backend data processing and recommendations
+- Plotly for frontend visualizations
 - Docker Compose for local app startup
+
+## Processing Workflow
+
+Uploads are optimized for a fast first result:
+
+1. Django validates the viewing history and extracts available profiles/years.
+2. The backend generates a lightweight recap for the default profile's most recent year.
+3. The frontend redirects to `/recap` using the returned profile, year, and job ID.
+4. A Redis/RQ worker fills in heavier sections such as profile comparisons, content insights, visualizations, and remaining years.
+5. For logged-in users, the worker also persists viewing history to PostgreSQL and warms personalized recommendations.
+
+See [backend/REDIS_WORKFLOW.md](backend/REDIS_WORKFLOW.md) for the detailed backend flow.
+
+## Recommendations
+
+Logged-in users can generate a personalized "what to watch next" playlist. The recommender uses saved viewing history, enriched title metadata, cached external catalog titles, and optional TMDB candidate discovery.
+
+The current recommender:
+
+- weights recent viewing more heavily than older history
+- generates profile-specific scoring hyperparameters
+- scores unseen candidates using content similarity plus structured affinity signals
+- diversifies results by genre, language, origin country, media type, and release era
+- stores generated playlists so they can be reused and refreshed
+
+Recommendations may include titles that are not currently available on Netflix in your region.
+
+See [backend/RECOMMENDER_WORKFLOW.md](backend/RECOMMENDER_WORKFLOW.md) for the detailed recommendation generation flow.
 
 ## Launch With Docker
 
@@ -57,17 +88,10 @@ POSTGRESQL_PASSWORD=your-postgres-password
 POSTGRESQL_HOST=localhost
 POSTGRESQL_PORT=5432
 FRONTEND_URL=http://localhost:3000
-```
-
-For password reset emails, also add SMTP settings:
-
-```env
-EMAIL_HOST=smtp.example.com
-EMAIL_PORT=587
-EMAIL_HOST_USER=your-smtp-user
-EMAIL_HOST_PASSWORD=your-smtp-password
-EMAIL_USE_TLS=True
-DEFAULT_FROM_EMAIL=no-reply@example.com
+REDIS_URL=redis://127.0.0.1:6379/0
+TMDB_API_KEY=optional-tmdb-api-key
+LOG_LEVEL=INFO
+LOG_FORMAT=text
 ```
 
 The compose file overrides `POSTGRESQL_HOST` to `host.docker.internal` inside the backend container, so keep your normal local host value in `.env`.
@@ -116,20 +140,39 @@ docker compose down
 Backend:
 
 ```bash
-cd backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python manage.py migrate
-python manage.py runserver 0.0.0.0:8000
+make setup
+make migrate
+make backend
+```
+
+Notebook and evaluation tools:
+
+```bash
+make setup-dev
 ```
 
 Frontend:
 
 ```bash
-cd frontend
-npm install
-npm run dev
+make frontend
+```
+
+Or run Redis, the RQ worker, Django, and Vite together:
+
+```bash
+make dev
 ```
 
 The Vite dev server usually runs at `http://localhost:5173`. The production Docker frontend runs at `http://localhost:3000`.
+
+## Observability
+
+The backend emits request logs with an `X-Request-ID` response header, request path, status code, and latency. Set `LOG_FORMAT=json` for structured logs that are easier to ship into a log collector.
+
+Health and runtime checks are available at:
+
+```text
+http://localhost:8000/api/observability/health/
+```
+
+The health response includes database, cache, RQ queue, and recent recap job state. A degraded response usually means Redis, PostgreSQL, or the RQ worker is not available.

@@ -206,6 +206,29 @@ class AccountManagementTests(TestCase):
         self.assertFalse(NetflixProfile.objects.filter(user_id=user_id).exists())
 
 
+class ObservabilityTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_health_endpoint_reports_runtime_checks(self):
+        response = self.client.get("/api/observability/health/")
+
+        self.assertIn(response.status_code, (200, 503))
+        self.assertIn("X-Request-ID", response)
+        self.assertIn("checks", response.data)
+        self.assertIn("database", response.data["checks"])
+        self.assertIn("cache", response.data["checks"])
+        self.assertIn("rq", response.data["checks"])
+
+    def test_request_id_header_can_be_supplied_by_client(self):
+        response = self.client.get(
+            "/api/csrf/",
+            HTTP_X_REQUEST_ID="request-id-test",
+        )
+
+        self.assertEqual(response["X-Request-ID"], "request-id-test")
+
+
 @override_settings(TMDB_API_KEY=None)
 class ProfileRecommendationTests(TestCase):
     def setUp(self):
@@ -294,6 +317,11 @@ class ProfileRecommendationTests(TestCase):
         self.assertIn(self.unseen.external_id, recommended_ids)
         self.assertNotIn("10", recommended_ids)
         self.assertEqual(RecommendationSet.objects.count(), 1)
+        self.assertIn("hyperparameters", recommendation_set.profile_summary)
+        self.assertIn(
+            "country_affinity",
+            recommendation_set.recommendations.first().contributing_signals,
+        )
 
     def test_generation_reuses_current_snapshot(self):
         first = generate_recommendations(self.profile)

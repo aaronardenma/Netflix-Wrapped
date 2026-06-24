@@ -24,7 +24,6 @@ apiClient.interceptors.request.use(
       config.headers['X-CSRFToken'] = csrfToken;
     }
     
-    console.log(`Making ${config.method?.toUpperCase()} request to: ${config.url}`);
     return config;
   },
   (error) => {
@@ -48,8 +47,6 @@ apiClient.interceptors.response.use(
       || error.config?.url?.includes('/api/auth/register/');
 
     if (!isAuthEndpoint && (error.response?.status === 401 || error.response?.status === 403)) {
-      console.log('Authentication error detected, logging out user...');
-      
       if (unauthorizedHandler) {
         unauthorizedHandler();
       }

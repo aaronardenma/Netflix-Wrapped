@@ -241,6 +241,20 @@ class RecapDataView(APIView):
             )
 
         try:
+            if job_id:
+                cached_result = cache.get(
+                    result_cache_key(recap_owner, profile_name, year)
+                )
+                if cached_result:
+                    cached_result = repair_cached_graph_data(
+                        cached_result,
+                        recap_owner,
+                        job_id,
+                        profile_name,
+                        year,
+                    )
+                    return ready_response(cached_result)
+
             # Check if data is already processed
             if user_obj:
                 profile, events = profile_events(
@@ -258,18 +272,6 @@ class RecapDataView(APIView):
                     )
                     return ready_response(graph_data)
 
-            cached_result = cache.get(
-                result_cache_key(recap_owner, profile_name, year)
-            )
-            if cached_result:
-                cached_result = repair_cached_graph_data(
-                    cached_result,
-                    recap_owner,
-                    job_id,
-                    profile_name,
-                    year,
-                )
-                return ready_response(cached_result)
             if job_id:
                 if not cache.get(upload_cache_key(recap_owner, job_id)):
                     return Response(

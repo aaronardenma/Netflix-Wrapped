@@ -10,7 +10,7 @@ BACKEND_URL := http://localhost:8000
 
 .PHONY: help setup setup-dev redis-start redis-stop redis-restart redis-status \
 	migrate migrations server server-json worker frontend backend backend-dev \
-	backend-json dev dev-json health refresh-recs test check shell
+	backend-json dev dev-json health refresh-recs eval-recs deploy-check test check shell
 
 help:
 	@printf '%s\n' \
@@ -34,6 +34,8 @@ help:
 		'  make dev-json       Start the full dev stack with JSON backend logs' \
 		'  make health         Check backend database/cache/RQ health' \
 		'  make refresh-recs   Refresh stale saved profile recommendations' \
+		'  make eval-recs      Run the recommender benchmark notebook' \
+		'  make deploy-check   Run backend checks/tests and frontend build' \
 		'  make test           Run backend tests' \
 		'  make check          Run Django system checks' \
 		'  make shell          Open the Django shell'
@@ -130,6 +132,14 @@ health:
 
 refresh-recs:
 	@cd "$(BACKEND_DIR)" && $(MANAGE) refresh_recommendations
+
+eval-recs:
+	@cd "$(BACKEND_DIR)" && $(PYTHON) -m nbconvert --to notebook --execute notebooks/recommender_evaluation_workflow.ipynb --output recommender_evaluation_workflow.executed.ipynb --ExecutePreprocessor.timeout=600
+
+deploy-check:
+	@$(MAKE) check
+	@$(MAKE) test
+	@cd "$(FRONTEND_DIR)" && npm run build
 
 test:
 	@cd "$(BACKEND_DIR)" && $(MANAGE) test api

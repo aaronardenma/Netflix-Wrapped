@@ -1,15 +1,8 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useSelector } from "react-redux";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import VisualizationBoard from "@/components/VisualizationBoard";
 import { netflixAPI } from "@/services/api";
-import CoreStatsGrid from "@/components/CoreStatsGrid";
-import GenreContentInsights from "@/components/GenreContentInsights";
-import ProfileComparisons from "@/components/ProfileComparisons";
-import TitleLevelInsights from "@/components/TitleLevelInsights";
-import WrappedCards from "@/components/WrappedCards";
-import ProfileRecommendations from "@/components/ProfileRecommendations";
 import { selectAuth } from "@/store/authSlice";
 import {
   ChartNoAxesCombinedIcon,
@@ -27,6 +20,14 @@ import {
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 
+const CoreStatsGrid = lazy(() => import("@/components/CoreStatsGrid"));
+const GenreContentInsights = lazy(() => import("@/components/GenreContentInsights"));
+const ProfileComparisons = lazy(() => import("@/components/ProfileComparisons"));
+const TitleLevelInsights = lazy(() => import("@/components/TitleLevelInsights"));
+const VisualizationBoard = lazy(() => import("@/components/VisualizationBoard"));
+const WrappedCards = lazy(() => import("@/components/WrappedCards"));
+const ProfileRecommendations = lazy(() => import("@/components/ProfileRecommendations"));
+
 const SESSION_UPLOAD_KEY = "netflixWrapped:lastAnonymousUpload";
 const ALL_YEARS_VALUE = "all";
 const STAT_TABS = [
@@ -39,6 +40,14 @@ const STAT_TABS = [
   { value: "for-you", label: "For You", icon: SparklesIcon },
 ];
 const PARTIAL_PENDING_TABS = new Set(["compare", "content", "profiles", "visualizations"]);
+
+function SectionFallback() {
+  return (
+    <div className="rounded-lg border border-neutral-200 bg-white p-6 text-sm font-bold text-neutral-600 shadow-sm">
+      Loading section...
+    </div>
+  );
+}
 
 async function fetchStoredData() {
   const res = await netflixAPI.getStoredData();
@@ -653,137 +662,139 @@ export default function Statistics() {
                 </div>
               </nav>
 
-              {isPartialRecap && PARTIAL_PENDING_TABS.has(activeView) && (
-                <section className="rounded-lg border border-amber-200 bg-amber-50 p-6 shadow-sm">
-                  <p className="text-sm font-bold uppercase text-amber-700">
-                    Finishing this section
-                  </p>
-                  <h3 className="mt-2 text-2xl font-black text-neutral-950">
-                    The first recap is ready. This tab is still being filled in.
-                  </h3>
-                  <p className="mt-3 max-w-2xl text-sm leading-6 text-neutral-700">
-                    Overview and title insights are available now. Profile comparisons,
-                    content insights, and visualizations will appear automatically after
-                    the worker completes the full recap.
-                  </p>
-                </section>
-              )}
+              <Suspense fallback={<SectionFallback />}>
+                {isPartialRecap && PARTIAL_PENDING_TABS.has(activeView) && (
+                  <section className="rounded-lg border border-amber-200 bg-amber-50 p-6 shadow-sm">
+                    <p className="text-sm font-bold uppercase text-amber-700">
+                      Finishing this section
+                    </p>
+                    <h3 className="mt-2 text-2xl font-black text-neutral-950">
+                      The first recap is ready. This tab is still being filled in.
+                    </h3>
+                    <p className="mt-3 max-w-2xl text-sm leading-6 text-neutral-700">
+                      Overview and title insights are available now. Profile comparisons,
+                      content insights, and visualizations will appear automatically after
+                      the worker completes the full recap.
+                    </p>
+                  </section>
+                )}
 
-              {activeView === "overview" && (
-                <>
-                  <CoreStatsGrid stats={graphs.core_stats} />
-                  <WrappedCards cards={graphs.wrapped_cards} profile={profile} year={year} />
-                </>
-              )}
-              {!isPartialRecap && activeView === "compare" && (
-                comparableYears.length >= 2 ? (
-                <section className="rounded-lg border border-neutral-200 bg-white p-5 shadow-sm">
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-                    <div>
+                {activeView === "overview" && (
+                  <>
+                    <CoreStatsGrid stats={graphs.core_stats} />
+                    <WrappedCards cards={graphs.wrapped_cards} profile={profile} year={year} />
+                  </>
+                )}
+                {!isPartialRecap && activeView === "compare" && (
+                  comparableYears.length >= 2 ? (
+                  <section className="rounded-lg border border-neutral-200 bg-white p-5 shadow-sm">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                      <div>
+                        <p className="text-sm font-bold uppercase text-red-600">
+                          Compare years
+                        </p>
+                        <h3 className="mt-1 text-xl font-black text-neutral-950">
+                          Year-over-year recap
+                        </h3>
+                      </div>
+                      <div className="grid w-full gap-3 sm:grid-cols-2 lg:w-auto lg:grid-cols-[1fr_1fr_auto]">
+                        <select
+                          value={compareYearA}
+                          onChange={(event) => setCompareYearA(event.target.value)}
+                          className="rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm font-semibold"
+                        >
+                          <option value="">Base year</option>
+                          {comparableYears.map((availableYear) => (
+                            <option key={availableYear} value={availableYear}>
+                              {availableYear}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          value={compareYearB}
+                          onChange={(event) => setCompareYearB(event.target.value)}
+                          className="rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm font-semibold"
+                        >
+                          <option value="">Compare year</option>
+                          {comparableYears.map((availableYear) => (
+                            <option key={availableYear} value={availableYear}>
+                              {availableYear}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          disabled={!canCompareYears || isYearComparisonLoading}
+                          onClick={() => refetchYearComparison()}
+                          className="rounded-md bg-neutral-950 px-4 py-2 text-sm font-bold text-white transition hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-2 lg:col-span-1"
+                        >
+                          {isYearComparisonLoading ? "Comparing..." : "Compare"}
+                        </button>
+                      </div>
+                    </div>
+                    {yearComparisonError && (
+                      <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                        Could not compare those years.
+                      </div>
+                    )}
+                    {yearComparison && (
+                      <div className="mt-5 grid gap-3 md:grid-cols-3">
+                        {[
+                          ["Watch time", "total_watchtime_hours", "hrs"],
+                          ["Viewing events", "total_viewing_events", ""],
+                          ["Unique titles", "unique_titles", ""],
+                        ].map(([label, key, suffix]) => {
+                          const delta = yearComparison.deltas?.[key] || 0;
+                          return (
+                            <div key={key} className="rounded-md border border-neutral-200 bg-neutral-50 p-4">
+                              <p className="text-xs font-bold uppercase text-neutral-500">{label}</p>
+                              <p className={`mt-2 text-2xl font-black ${delta >= 0 ? "text-emerald-700" : "text-red-700"}`}>
+                                {delta >= 0 ? "+" : ""}
+                                {delta}
+                                {suffix ? ` ${suffix}` : ""}
+                              </p>
+                              <p className="mt-1 text-xs text-neutral-500">
+                                {yearComparison.year_b} vs {yearComparison.year_a}
+                              </p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </section>
+                  ) : (
+                    <section className="rounded-lg border border-neutral-200 bg-white p-8 shadow-sm">
                       <p className="text-sm font-bold uppercase text-red-600">
                         Compare years
                       </p>
-                      <h3 className="mt-1 text-xl font-black text-neutral-950">
-                        Year-over-year recap
+                      <h3 className="mt-2 text-2xl font-black text-neutral-950">
+                        Two completed years are required
                       </h3>
-                    </div>
-                    <div className="grid w-full gap-3 sm:grid-cols-2 lg:w-auto lg:grid-cols-[1fr_1fr_auto]">
-                      <select
-                        value={compareYearA}
-                        onChange={(event) => setCompareYearA(event.target.value)}
-                        className="rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm font-semibold"
-                      >
-                        <option value="">Base year</option>
-                        {comparableYears.map((availableYear) => (
-                          <option key={availableYear} value={availableYear}>
-                            {availableYear}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        value={compareYearB}
-                        onChange={(event) => setCompareYearB(event.target.value)}
-                        className="rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm font-semibold"
-                      >
-                        <option value="">Compare year</option>
-                        {comparableYears.map((availableYear) => (
-                          <option key={availableYear} value={availableYear}>
-                            {availableYear}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        disabled={!canCompareYears || isYearComparisonLoading}
-                        onClick={() => refetchYearComparison()}
-                        className="rounded-md bg-neutral-950 px-4 py-2 text-sm font-bold text-white transition hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-2 lg:col-span-1"
-                      >
-                        {isYearComparisonLoading ? "Comparing..." : "Compare"}
-                      </button>
-                    </div>
-                  </div>
-                  {yearComparisonError && (
-                    <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                      Could not compare those years.
-                    </div>
-                  )}
-                  {yearComparison && (
-                    <div className="mt-5 grid gap-3 md:grid-cols-3">
-                      {[
-                        ["Watch time", "total_watchtime_hours", "hrs"],
-                        ["Viewing events", "total_viewing_events", ""],
-                        ["Unique titles", "unique_titles", ""],
-                      ].map(([label, key, suffix]) => {
-                        const delta = yearComparison.deltas?.[key] || 0;
-                        return (
-                          <div key={key} className="rounded-md border border-neutral-200 bg-neutral-50 p-4">
-                            <p className="text-xs font-bold uppercase text-neutral-500">{label}</p>
-                            <p className={`mt-2 text-2xl font-black ${delta >= 0 ? "text-emerald-700" : "text-red-700"}`}>
-                              {delta >= 0 ? "+" : ""}
-                              {delta}
-                              {suffix ? ` ${suffix}` : ""}
-                            </p>
-                            <p className="mt-1 text-xs text-neutral-500">
-                              {yearComparison.year_b} vs {yearComparison.year_a}
-                            </p>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </section>
-                ) : (
-                  <section className="rounded-lg border border-neutral-200 bg-white p-8 shadow-sm">
-                    <p className="text-sm font-bold uppercase text-red-600">
-                      Compare years
-                    </p>
-                    <h3 className="mt-2 text-2xl font-black text-neutral-950">
-                      Two completed years are required
-                    </h3>
-                    <p className="mt-3 max-w-2xl text-sm leading-6 text-neutral-600">
-                      This profile needs viewing history from at least two completed years before a year-over-year comparison can be shown.
-                    </p>
-                  </section>
-                )
-              )}
-              {activeView === "titles" && (
-                <TitleLevelInsights insights={graphs.title_level_insights} />
-              )}
-              {!isPartialRecap && activeView === "content" && (
-                <GenreContentInsights insights={graphs.genre_content_insights} />
-              )}
-              {!isPartialRecap && activeView === "profiles" && (
-                <ProfileComparisons comparisons={graphs.profile_comparisons} />
-              )}
-              {!isPartialRecap && activeView === "visualizations" && (
-                <VisualizationBoard graphs={graphs} />
-              )}
-              {activeView === "for-you" && (
-                <ProfileRecommendations
-                  profile={profile}
-                  isAuthenticated={isAuthenticated}
-                />
-              )}
+                      <p className="mt-3 max-w-2xl text-sm leading-6 text-neutral-600">
+                        This profile needs viewing history from at least two completed years before a year-over-year comparison can be shown.
+                      </p>
+                    </section>
+                  )
+                )}
+                {activeView === "titles" && (
+                  <TitleLevelInsights insights={graphs.title_level_insights} />
+                )}
+                {!isPartialRecap && activeView === "content" && (
+                  <GenreContentInsights insights={graphs.genre_content_insights} />
+                )}
+                {!isPartialRecap && activeView === "profiles" && (
+                  <ProfileComparisons comparisons={graphs.profile_comparisons} />
+                )}
+                {!isPartialRecap && activeView === "visualizations" && (
+                  <VisualizationBoard graphs={graphs} />
+                )}
+                {activeView === "for-you" && (
+                  <ProfileRecommendations
+                    profile={profile}
+                    isAuthenticated={isAuthenticated}
+                  />
+                )}
+              </Suspense>
             </div>
           )}
         </section>

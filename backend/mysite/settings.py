@@ -39,7 +39,7 @@ FRONTEND_ORIGINS = [
 ]
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 RUNNING_TESTS = "test" in sys.argv
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "WARNING" if RUNNING_TESTS else "INFO")
 LOG_FORMAT = os.getenv("LOG_FORMAT", "text")
 
 

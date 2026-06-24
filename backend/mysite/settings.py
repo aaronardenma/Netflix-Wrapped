@@ -32,6 +32,11 @@ OMDB_API_KEY = os.getenv("OMDB_API_KEY")  # optional
 TMDB_ENRICHMENT_MAX_TITLES = int(os.getenv("TMDB_ENRICHMENT_MAX_TITLES", "50"))
 TMDB_ENRICHMENT_MAX_CALLS = int(os.getenv("TMDB_ENRICHMENT_MAX_CALLS", "100"))
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+FRONTEND_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("FRONTEND_ORIGINS", FRONTEND_URL).split(",")
+    if origin.strip()
+]
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 RUNNING_TESTS = "test" in sys.argv
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -55,9 +60,13 @@ DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "webmast
 
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = env_bool("DEBUG", True)
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.getenv("ALLOWED_HOSTS", "").split(",")
+    if host.strip()
+]
 
 
 # Application definition
@@ -214,7 +223,7 @@ SIMPLE_JWT = {
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
 }
 
-CSRF_TRUSTED_ORIGINS = [
+LOCAL_FRONTEND_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:3000",
@@ -222,15 +231,17 @@ CSRF_TRUSTED_ORIGINS = [
     "http://127.0.0.1:8000",  # optional
 ]
 
+CSRF_TRUSTED_ORIGINS = list(dict.fromkeys([
+    *LOCAL_FRONTEND_ORIGINS,
+    *FRONTEND_ORIGINS,
+]))
 
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
+CORS_ALLOWED_ORIGINS = list(dict.fromkeys([
+    *LOCAL_FRONTEND_ORIGINS,
     "http://localhost:8000",
     "http://127.0.0.1:8000",
-]
+    *FRONTEND_ORIGINS,
+]))
 CORS_ALLOW_CREDENTIALS = True
 
 LOGGING = {

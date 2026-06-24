@@ -2,7 +2,10 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  BookmarkCheck,
+  Check,
   Clapperboard,
+  EyeOff,
   Film,
   ImageOff,
   RefreshCw,
@@ -10,6 +13,13 @@ import {
   Tv,
 } from "lucide-react";
 import { netflixAPI } from "@/services/api";
+
+const FEEDBACK_ACTIONS = {
+  LOOKS_GOOD: "looks_good",
+  NOT_INTERESTED: "not_interested",
+  ALREADY_WATCHED: "already_watched",
+  SAVED: "saved",
+};
 
 function formatPeriod(start, end) {
   const options = { month: "short", day: "numeric", year: "numeric" };
@@ -41,7 +51,7 @@ function RecommendationPoster({ recommendation }) {
   );
 }
 
-function RecommendationCard({ recommendation }) {
+function RecommendationCard({ recommendation, onFeedback, feedbackPending }) {
   const TypeIcon = recommendation.media_type === "tv" ? Tv : Film;
   const matchStrength =
     recommendation.rank <= 3
@@ -87,6 +97,33 @@ function RecommendationCard({ recommendation }) {
         <p className="mt-auto pt-4 text-sm font-bold leading-6 text-neutral-800">
           {recommendation.explanation}
         </p>
+
+        <div className="mt-4 flex flex-wrap gap-2 border-t border-neutral-200 pt-4">
+          {[
+            [FEEDBACK_ACTIONS.LOOKS_GOOD, "Looks good", Check],
+            [FEEDBACK_ACTIONS.SAVED, "Save", BookmarkCheck],
+            [FEEDBACK_ACTIONS.NOT_INTERESTED, "Not interested", EyeOff],
+            [FEEDBACK_ACTIONS.ALREADY_WATCHED, "Already watched", Clapperboard],
+          ].map(([action, label, Icon]) => {
+            const selected = recommendation.feedback_action === action;
+            return (
+              <button
+                key={action}
+                type="button"
+                disabled={feedbackPending}
+                onClick={() => onFeedback(recommendation, action)}
+                className={`inline-flex cursor-pointer items-center gap-1.5 border px-2.5 py-1.5 text-xs font-black transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                  selected
+                    ? "border-red-200 bg-red-50 text-red-700"
+                    : "border-neutral-200 bg-white text-neutral-600 hover:border-red-200 hover:text-red-700"
+                }`}
+              >
+                <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+                {label}
+              </button>
+            );
+          })}
+        </div>
 
         <div className="mt-4 flex items-center gap-2 border-t border-neutral-200 pt-4 text-xs font-black uppercase text-neutral-600 lg:hidden">
           <Sparkles className="h-4 w-4 text-red-600" aria-hidden="true" />
@@ -162,6 +199,47 @@ export default function ProfileRecommendations({ profile, isAuthenticated }) {
     },
     onSuccess: (nextData) => {
       queryClient.setQueryData(queryKey, nextData);
+    },
+  });
+  const feedbackMutation = useMutation({
+    mutationFn: ({ recommendation, action }) =>
+      netflixAPI.saveRecommendationFeedback({
+        profileName: profile,
+        recommendation,
+        action,
+      }),
+    onSuccess: (response, { recommendation, action }) => {
+      const feedbackAction = response.data.data.action;
+      queryClient.setQueryData(queryKey, (currentData) => {
+        if (!currentData) return currentData;
+        const shouldHide = [
+          FEEDBACK_ACTIONS.NOT_INTERESTED,
+          FEEDBACK_ACTIONS.ALREADY_WATCHED,
+        ].includes(feedbackAction);
+        return {
+          ...currentData,
+          recommendations: currentData.recommendations
+            .filter((currentRecommendation) => {
+              if (!shouldHide) return true;
+              return !(
+                currentRecommendation.media_type === recommendation.media_type &&
+                currentRecommendation.tmdb_id === recommendation.tmdb_id
+              );
+            })
+            .map((currentRecommendation) => {
+              if (
+                currentRecommendation.media_type !== recommendation.media_type ||
+                currentRecommendation.tmdb_id !== recommendation.tmdb_id
+              ) {
+                return currentRecommendation;
+              }
+              return {
+                ...currentRecommendation,
+                feedback_action: feedbackAction,
+              };
+            }),
+        };
+      });
     },
   });
 
@@ -260,6 +338,13 @@ export default function ProfileRecommendations({ profile, isAuthenticated }) {
             <RecommendationCard
               key={`${recommendation.media_type}-${recommendation.tmdb_id}`}
               recommendation={recommendation}
+              feedbackPending={feedbackMutation.isPending}
+              onFeedback={(currentRecommendation, action) =>
+                feedbackMutation.mutate({
+                  recommendation: currentRecommendation,
+                  action,
+                })
+              }
             />
           ))}
         </div>
@@ -269,6 +354,11 @@ export default function ProfileRecommendations({ profile, isAuthenticated }) {
           <p className="mt-3 font-black text-neutral-900">
             No unseen matches were found.
           </p>
+        </div>
+      )}
+      {feedbackMutation.error && (
+        <div className="mt-4 border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-800">
+          Feedback could not be saved.
         </div>
       )}
       <p className="mt-5 border-t border-neutral-200 pt-4 text-xs font-bold leading-5 text-neutral-500">

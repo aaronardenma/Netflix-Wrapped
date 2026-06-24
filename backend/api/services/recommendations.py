@@ -13,6 +13,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from api.models import (
     ExternalCatalogTitle,
     Recommendation,
+    RecommendationFeedback,
     RecommendationSet,
     Title,
     ViewingEvent,
@@ -20,7 +21,7 @@ from api.models import (
 from api.services.title_metadata import TmdbClient
 
 
-ALGORITHM_VERSION = "content-tfidf-v2"
+ALGORITHM_VERSION = "content-tfidf-v3"
 PLAYLIST_SIZE = 20
 PRIMARY_WINDOW_DAYS = 90
 BASELINE_WINDOW_DAYS = 365
@@ -28,6 +29,14 @@ CATALOG_CACHE_DAYS = 30
 MAX_TMDB_CALLS = 14
 CACHED_CANDIDATE_LIMIT = 500
 MIN_CANDIDATE_POOL = 80
+NEGATIVE_FEEDBACK_ACTIONS = {
+    RecommendationFeedback.Action.NOT_INTERESTED,
+    RecommendationFeedback.Action.ALREADY_WATCHED,
+}
+POSITIVE_FEEDBACK_ACTIONS = {
+    RecommendationFeedback.Action.LOOKS_GOOD,
+    RecommendationFeedback.Action.SAVED,
+}
 
 TMDB_GENRES = {
     12: "Adventure",
@@ -132,6 +141,13 @@ def _cache_tmdb_results(rows, media_type, source_kind):
     return cached
 
 
+def _feedback_map(profile):
+    return {
+        feedback.catalog_title_id: feedback.action
+        for feedback in RecommendationFeedback.objects.filter(profile=profile)
+    }
+
+
 def _top_preferences(weighted_titles, field, limit=5):
     totals = Counter()
     for row in weighted_titles:
@@ -194,6 +210,44 @@ def _load_profile_history(profile):
     return period_start, period_end, weighted_titles
 
 
+def _seed_titles(weighted_titles, hyperparameters):
+    oldest_possible = timezone.now() - timedelta(days=36500)
+    top_weighted = weighted_titles[: hyperparameters["seed_count"]]
+    recent = sorted(
+        weighted_titles,
+        key=lambda row: row["latest"] or oldest_possible,
+        reverse=True,
+    )[: hyperparameters["recent_seed_count"]]
+    comfort = [
+        row
+        for row in sorted(
+            weighted_titles,
+            key=lambda row: row["seconds"],
+            reverse=True,
+        )
+        if row["title"] not in {seed["title"] for seed in top_weighted}
+    ][: hyperparameters["comfort_seed_count"]]
+
+    seeds = []
+    seen_title_ids = set()
+    for source_kind, rows in (
+        ("top-title-related", top_weighted),
+        ("recent-related", recent),
+        ("comfort-related", comfort),
+    ):
+        for row in rows:
+            title_id = row["title"].id
+            if title_id in seen_title_ids:
+                continue
+            seeds.append((row, source_kind))
+            seen_title_ids.add(title_id)
+    return seeds
+
+
+def _tmdb_call_allowed(client, hyperparameters):
+    return client.calls < hyperparameters["max_tmdb_calls"]
+
+
 def _discover_candidates(weighted_titles, preferences, hyperparameters):
     client = TmdbClient()
     fresh_after = timezone.now() - timedelta(days=CATALOG_CACHE_DAYS)
@@ -215,10 +269,10 @@ def _discover_candidates(weighted_titles, preferences, hyperparameters):
         return cached
 
     discovered = {title.id: title for title in cached}
-    for seed in weighted_titles[: hyperparameters["seed_count"]]:
+    for seed, source_kind in _seed_titles(weighted_titles, hyperparameters):
         title = seed["title"]
         media_type = _media_type_for_title(title)
-        if not media_type or not title.tmdb_id or client.calls >= MAX_TMDB_CALLS:
+        if not media_type or not title.tmdb_id or not _tmdb_call_allowed(client, hyperparameters):
             continue
         try:
             payload = client.get(
@@ -228,7 +282,7 @@ def _discover_candidates(weighted_titles, preferences, hyperparameters):
         except requests.RequestException:
             continue
         for candidate in _cache_tmdb_results(
-            payload.get("results", []), media_type, "seed-related"
+            payload.get("results", []), media_type, source_kind
         ):
             discovered[candidate.id] = candidate
 
@@ -250,7 +304,7 @@ def _discover_candidates(weighted_titles, preferences, hyperparameters):
         )
     ]
     for media_type in preferred_types or ["movie", "tv"]:
-        if client.calls >= MAX_TMDB_CALLS:
+        if not _tmdb_call_allowed(client, hyperparameters):
             break
         params = {
             "sort_by": "vote_count.desc",
@@ -270,10 +324,10 @@ def _discover_candidates(weighted_titles, preferences, hyperparameters):
             discovered[candidate.id] = candidate
 
     for genre in preferred_genres:
-        if client.calls >= MAX_TMDB_CALLS:
+        if not _tmdb_call_allowed(client, hyperparameters):
             break
         for media_type in preferred_types or ["movie", "tv"]:
-            if client.calls >= MAX_TMDB_CALLS:
+            if not _tmdb_call_allowed(client, hyperparameters):
                 break
             params = {
                 "sort_by": "vote_count.desc",
@@ -292,6 +346,33 @@ def _discover_candidates(weighted_titles, preferences, hyperparameters):
                 payload.get("results", []), media_type, "genre-discovery"
             ):
                 discovered[candidate.id] = candidate
+
+    for media_type in preferred_types or ["movie", "tv"]:
+        if not _tmdb_call_allowed(client, hyperparameters):
+            break
+        try:
+            payload = client.get(f"/trending/{media_type}/week", {"page": 1}) or {}
+        except requests.RequestException:
+            continue
+        for candidate in _cache_tmdb_results(
+            payload.get("results", []), media_type, "trending"
+        ):
+            discovered[candidate.id] = candidate
+
+    for media_type in preferred_types or ["movie", "tv"]:
+        if not _tmdb_call_allowed(client, hyperparameters):
+            break
+        try:
+            payload = client.get(
+                f"/{media_type}/popular",
+                {"page": 1},
+            ) or {}
+        except requests.RequestException:
+            continue
+        for candidate in _cache_tmdb_results(
+            payload.get("results", []), media_type, "popular"
+        ):
+            discovered[candidate.id] = candidate
 
     return list(discovered.values())
 
@@ -420,21 +501,25 @@ def _generate_hyperparameters(weighted_titles):
     richness = _metadata_richness(weighted_titles)
     title_count = len(weighted_titles)
     sparse_profile = title_count < 8
-    text_weight = 0.46 if richness >= 0.65 else 0.34
+    cold_start_profile = title_count < 3
+    text_weight = 0.44 if richness >= 0.65 else 0.32
     if sparse_profile:
-        text_weight -= 0.06
+        text_weight -= 0.08
+    if cold_start_profile:
+        text_weight = 0.20
 
     weights = {
         "content_similarity": round(text_weight, 2),
-        "genre_affinity": 0.18,
+        "genre_affinity": 0.17,
         "language_affinity": 0.10,
         "country_affinity": 0.08,
         "type_affinity": 0.07,
         "release_decade_affinity": 0.04,
         "runtime_affinity": 0.03,
         "rating_affinity": 0.02,
-        "quality_confidence": 0.05,
-        "seed_relationship": 0.03,
+        "quality_confidence": 0.08 if cold_start_profile else 0.06,
+        "source_strength": 0.07 if cold_start_profile else 0.04,
+        "feedback_affinity": 0.04,
     }
     remaining = round(1 - sum(weights.values()), 2)
     if remaining:
@@ -444,12 +529,15 @@ def _generate_hyperparameters(weighted_titles):
         "algorithm_version": ALGORITHM_VERSION,
         "metadata_richness": round(richness, 3),
         "seed_count": min(8, max(3, title_count // 2)),
+        "recent_seed_count": min(4, max(1, title_count // 3)),
+        "comfort_seed_count": min(3, max(1, title_count // 4)),
         "candidate_cache_limit": CACHED_CANDIDATE_LIMIT,
         "minimum_candidate_pool": MIN_CANDIDATE_POOL,
         "max_tmdb_calls": MAX_TMDB_CALLS,
+        "profile_mode": "cold_start" if cold_start_profile else "sparse" if sparse_profile else "standard",
         "score_weights": weights,
         "diversity_caps": {
-            "genre": 5 if sparse_profile else 4,
+            "genre": 6 if cold_start_profile else 5 if sparse_profile else 4,
             "language": 8,
             "country": 8,
             "media_type": 14,
@@ -458,7 +546,23 @@ def _generate_hyperparameters(weighted_titles):
     }
 
 
-def _score_candidates(weighted_titles, candidates, preferences, hyperparameters):
+def _source_strength(candidate):
+    sources = set(candidate.metadata.get("candidate_sources", []))
+    if sources & {"seed-related", "top-title-related", "recent-related", "comfort-related"}:
+        return 1.0
+    if "genre-discovery" in sources:
+        return 0.75
+    if "taste-discovery" in sources:
+        return 0.65
+    if "trending" in sources:
+        return 0.5
+    if "popular" in sources:
+        return 0.4
+    return 0.0
+
+
+def _score_candidates(weighted_titles, candidates, preferences, hyperparameters, feedback_actions=None):
+    feedback_actions = feedback_actions or {}
     watched_external_ids = {
         (_media_type_for_title(row["title"]), str(row["title"].tmdb_id))
         for row in weighted_titles
@@ -473,6 +577,7 @@ def _score_candidates(weighted_titles, candidates, preferences, hyperparameters)
         for candidate in candidates
         if (candidate.media_type, candidate.external_id) not in watched_external_ids
         and candidate.title.strip().casefold() not in watched_names
+        and feedback_actions.get(candidate.id) not in NEGATIVE_FEEDBACK_ACTIONS
         and (candidate.genres or candidate.overview)
     ]
     if not eligible:
@@ -521,16 +626,14 @@ def _score_candidates(weighted_titles, candidates, preferences, hyperparameters)
             0.0,
         )
         rating_score = ratings.get(candidate.rating, 0.0)
+        feedback_action = feedback_actions.get(candidate.id)
+        feedback_score = 1.0 if feedback_action in POSITIVE_FEEDBACK_ACTIONS else 0.0
         quality_score = min(
             1.0,
             (candidate.vote_average / 10) * 0.6
             + min(1.0, log(1 + candidate.vote_count) / log(10001)) * 0.4,
         )
-        source_score = (
-            1.0
-            if "seed-related" in candidate.metadata.get("candidate_sources", [])
-            else 0.0
-        )
+        source_score = _source_strength(candidate)
         final_score = (
             float(similarity) * score_weights["content_similarity"]
             + genre_score * score_weights["genre_affinity"]
@@ -541,7 +644,8 @@ def _score_candidates(weighted_titles, candidates, preferences, hyperparameters)
             + runtime_score * score_weights["runtime_affinity"]
             + rating_score * score_weights["rating_affinity"]
             + quality_score * score_weights["quality_confidence"]
-            + source_score * score_weights["seed_relationship"]
+            + source_score * score_weights["source_strength"]
+            + feedback_score * score_weights["feedback_affinity"]
         )
         signals = {
             "content_similarity": round(float(similarity), 4),
@@ -553,7 +657,9 @@ def _score_candidates(weighted_titles, candidates, preferences, hyperparameters)
             "runtime_affinity": round(runtime_score, 4),
             "rating_affinity": round(rating_score, 4),
             "quality_confidence": round(quality_score, 4),
-            "seed_relationship": source_score,
+            "source_strength": round(source_score, 4),
+            "feedback_affinity": feedback_score,
+            "feedback_action": feedback_action or "",
         }
         scored.append((candidate, final_score, signals))
     return sorted(scored, key=lambda row: row[1], reverse=True)
@@ -564,8 +670,12 @@ def _explanation(candidate, signals, preferences):
     top_genre = preferences["genres"][0]["value"] if preferences["genres"] else ""
     top_language = preferences["languages"][0]["value"] if preferences["languages"] else ""
     top_country = preferences["countries"][0]["value"] if preferences["countries"] else ""
-    if "seed-related" in sources:
+    if set(sources) & {"seed-related", "top-title-related", "recent-related", "comfort-related"}:
         return "Related to titles you spent the most time with recently."
+    if signals.get("feedback_action") == RecommendationFeedback.Action.SAVED:
+        return "Similar to titles you have saved from past recommendations."
+    if signals.get("feedback_action") == RecommendationFeedback.Action.LOOKS_GOOD:
+        return "Similar to recommendations you marked as a good fit."
     if top_genre and top_genre in candidate.genres:
         return f"Matches your recent interest in {top_genre.lower()} titles."
     if top_language and signals["language_affinity"] > 0.15 and candidate.original_language:
@@ -625,6 +735,7 @@ def _diversify(scored, hyperparameters, limit=PLAYLIST_SIZE):
 
 
 def serialize_recommendation_set(recommendation_set):
+    feedback_actions = _feedback_map(recommendation_set.profile)
     return {
         "id": str(recommendation_set.id),
         "profile": recommendation_set.profile.name,
@@ -640,6 +751,7 @@ def serialize_recommendation_set(recommendation_set):
                 "segment": recommendation.segment,
                 "explanation": recommendation.explanation,
                 "signals": recommendation.contributing_signals,
+                "feedback_action": feedback_actions.get(recommendation.catalog_title_id, ""),
                 "title": recommendation.catalog_title.title,
                 "media_type": recommendation.catalog_title.media_type,
                 "genres": recommendation.catalog_title.genres,
@@ -675,12 +787,14 @@ def generate_recommendations(profile, force=False):
 
     preferences = _profile_preferences(weighted_titles)
     hyperparameters = _generate_hyperparameters(weighted_titles)
+    feedback_actions = _feedback_map(profile)
     candidates = _discover_candidates(weighted_titles, preferences, hyperparameters)
     scored = _score_candidates(
         weighted_titles,
         candidates,
         preferences,
         hyperparameters,
+        feedback_actions=feedback_actions,
     )
     selected = _diversify(scored, hyperparameters)
     if not selected:
@@ -699,6 +813,7 @@ def generate_recommendations(profile, force=False):
         "titles_considered": len(weighted_titles),
         "candidate_count": len(candidates),
         "eligible_candidate_count": len(scored),
+        "feedback_counts": dict(Counter(feedback_actions.values())),
     }
 
     with transaction.atomic():
@@ -722,7 +837,9 @@ def generate_recommendations(profile, force=False):
                     score=score,
                     segment=(
                         "because_you_watched"
-                        if signals["seed_relationship"]
+                        if signals["source_strength"] >= 1
+                        else "saved_signal"
+                        if signals["feedback_affinity"]
                         else "top_match"
                     ),
                     explanation=_explanation(candidate, signals, preferences),

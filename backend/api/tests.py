@@ -16,6 +16,7 @@ from rest_framework.test import APIClient
 from .models import (
     ExternalCatalogTitle,
     NetflixProfile,
+    RecommendationFeedback,
     RecommendationSet,
     Title,
     Upload,
@@ -43,6 +44,7 @@ from .views.recap_views import (
     ViewingHistoryUploadView,
     YearComparisonView,
 )
+from .views.recommendation_views import RecommendationFeedbackView
 from .services.viewing_ingestion import clean_title, ingest_viewing_dataframe
 from .services.title_metadata import apply_manual_overrides
 from utils.data_analysis import enrichWithTitleMetadata, getGenreContentInsightsData
@@ -322,12 +324,60 @@ class ProfileRecommendationTests(TestCase):
             "country_affinity",
             recommendation_set.recommendations.first().contributing_signals,
         )
+        self.assertIn(
+            "source_strength",
+            recommendation_set.recommendations.first().contributing_signals,
+        )
 
     def test_generation_reuses_current_snapshot(self):
         first = generate_recommendations(self.profile)
         second = generate_recommendations(self.profile)
 
         self.assertEqual(first.id, second.id)
+
+    def test_negative_feedback_excludes_catalog_title(self):
+        RecommendationFeedback.objects.create(
+            profile=self.profile,
+            catalog_title=self.unseen,
+            action=RecommendationFeedback.Action.NOT_INTERESTED,
+        )
+
+        recommendation_set = generate_recommendations(self.profile, force=True)
+        recommended_ids = set(
+            recommendation_set.recommendations.values_list(
+                "catalog_title__external_id", flat=True
+            )
+        )
+
+        self.assertNotIn(self.unseen.external_id, recommended_ids)
+        self.assertEqual(
+            recommendation_set.profile_summary["feedback_counts"]["not_interested"],
+            1,
+        )
+
+    def test_feedback_api_saves_profile_title_action(self):
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.post(
+            "/api/recommendations/feedback/",
+            {
+                "profile_name": self.profile.name,
+                "media_type": self.unseen.media_type,
+                "tmdb_id": self.unseen.external_id,
+                "action": RecommendationFeedback.Action.SAVED,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["action"], RecommendationFeedback.Action.SAVED)
+        self.assertTrue(
+            RecommendationFeedback.objects.filter(
+                profile=self.profile,
+                catalog_title=self.unseen,
+                action=RecommendationFeedback.Action.SAVED,
+            ).exists()
+        )
 
     def test_api_rejects_another_users_profile(self):
         other_user = User.objects.create_user(
@@ -356,6 +406,7 @@ class RecapViewRoutingTests(TestCase):
             "/api/stored-data/": AvailableRecapsView,
             "/api/get-stored-data/": SavedRecapView,
             "/api/compare-years/": YearComparisonView,
+            "/api/recommendations/feedback/": RecommendationFeedbackView,
         }
 
         for path, expected_view in expected_views.items():

@@ -98,6 +98,14 @@ export const netflixAPI = {
       profile_name: profileName,
       refresh,
     }),
+
+  saveRecommendationFeedback: ({ profileName, recommendation, action }) =>
+    apiClient.post("/api/recommendations/feedback/", {
+      profile_name: profileName,
+      media_type: recommendation.media_type,
+      tmdb_id: recommendation.tmdb_id,
+      action,
+    }),
 };
 
 export default apiClient;

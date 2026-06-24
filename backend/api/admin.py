@@ -3,6 +3,7 @@ from .models import (
     ExternalCatalogTitle,
     NetflixProfile,
     Recommendation,
+    RecommendationFeedback,
     RecommendationSet,
     Title,
     Upload,
@@ -21,3 +22,4 @@ admin.site.register(ViewingEvent)
 admin.site.register(ExternalCatalogTitle)
 admin.site.register(RecommendationSet)
 admin.site.register(Recommendation)
+admin.site.register(RecommendationFeedback)

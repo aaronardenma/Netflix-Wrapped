@@ -319,3 +319,48 @@ class Recommendation(models.Model):
 
     def __str__(self):
         return f"{self.rank}. {self.catalog_title.title}"
+
+
+class RecommendationFeedback(models.Model):
+    class Action(models.TextChoices):
+        LOOKS_GOOD = "looks_good", "Looks good"
+        NOT_INTERESTED = "not_interested", "Not interested"
+        ALREADY_WATCHED = "already_watched", "Already watched"
+        SAVED = "saved", "Saved"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    profile = models.ForeignKey(
+        NetflixProfile,
+        on_delete=models.CASCADE,
+        related_name="recommendation_feedback",
+    )
+    catalog_title = models.ForeignKey(
+        ExternalCatalogTitle,
+        on_delete=models.CASCADE,
+        related_name="profile_feedback",
+    )
+    recommendation = models.ForeignKey(
+        Recommendation,
+        on_delete=models.SET_NULL,
+        related_name="feedback",
+        null=True,
+        blank=True,
+    )
+    action = models.CharField(max_length=32, choices=Action.choices)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["profile", "catalog_title"],
+                name="unique_recommendation_feedback_per_profile_title",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["profile", "action"]),
+            models.Index(fields=["catalog_title", "action"]),
+        ]
+
+    def __str__(self):
+        return f"{self.profile.name} - {self.catalog_title.title}: {self.action}"

@@ -5,8 +5,8 @@ django-rq==3.0.1
 djangorestframework==3.16.0
 djangorestframework-simplejwt==5.5.1
 gunicorn==23.0.0
-numpy==1.26.0
-pandas==2.1.1
+numpy==2.3.1
+pandas==2.3.1
 psycopg2-binary==2.9.10
 python-decouple==3.8
 python-dotenv==1.2.1

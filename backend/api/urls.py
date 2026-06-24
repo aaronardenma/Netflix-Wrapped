@@ -17,7 +17,10 @@ from api.views.user_views import (
     WipeUserDataView,
 )
 from api.views.views import CSRFCookieView
-from api.views.recommendation_views import ProfileRecommendationsView
+from api.views.recommendation_views import (
+    ProfileRecommendationsView,
+    RecommendationFeedbackView,
+)
 from api.views.observability_views import HealthCheckView
 
 from rest_framework_simplejwt.views import (
@@ -45,6 +48,7 @@ urlpatterns = [
     path('get-stored-data/', SavedRecapView.as_view(), name='get-stored-data'),
     path('compare-years/', YearComparisonView.as_view(), name='compare-years'),
     path('recommendations/', ProfileRecommendationsView.as_view(), name='recommendations'),
+    path('recommendations/feedback/', RecommendationFeedbackView.as_view(), name='recommendation-feedback'),
     path('observability/health/', HealthCheckView.as_view(), name='observability-health'),
 
     path('auth/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),       # login with username/password to get tokens

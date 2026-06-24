@@ -7,7 +7,7 @@ import requests
 from django.conf import settings
 from django.utils import timezone
 
-from api.models import Title
+from api.models import RecommendationSet, Title, ViewingEvent
 
 
 TMDB_API_URL = "https://api.themoviedb.org/3"
@@ -297,14 +297,19 @@ def enrich_titles(titles, watchtime_by_title=None, max_titles=DEFAULT_MAX_TITLES
         return {"manual_or_cached": len(titles) - len(unresolved), "tmdb_calls": 0, "tmdb_enabled": False}
 
     matched = 0
+    matched_titles = []
     for title in unresolved:
         if client.calls >= max_calls:
             break
         try:
             if enrich_title_from_tmdb(title, client=client, max_calls=max_calls):
                 matched += 1
+                matched_titles.append(title)
         except requests.RequestException:
             mark_unknown(title, source="tmdb-error")
+
+    if matched_titles:
+        invalidate_recommendations_for_titles(matched_titles)
 
     return {"matched": matched, "tmdb_calls": client.calls, "tmdb_enabled": True}
 
@@ -314,3 +319,18 @@ def enrich_titles_safely(*args, **kwargs):
         return enrich_titles(*args, **kwargs)
     except Exception as exc:
         return {"error": str(exc), "tmdb_enabled": bool(getattr(settings, "TMDB_API_KEY", None))}
+
+
+def invalidate_recommendations_for_titles(titles):
+    title_ids = [title.id for title in titles]
+    if not title_ids:
+        return 0
+    profile_ids = (
+        ViewingEvent.objects.filter(title_id__in=title_ids)
+        .values_list("profile_id", flat=True)
+        .distinct()
+    )
+    deleted_count, _ = RecommendationSet.objects.filter(
+        profile_id__in=profile_ids,
+    ).delete()
+    return deleted_count

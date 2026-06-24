@@ -4,5 +4,8 @@ __pycache__/
 .pytest_cache/
 backend/.venv
 backend/.env
+backend/notebooks/results/
+backend/notebooks/*.executed.ipynb
+backend/utils/ViewingActivity*.csv
 
 .DS_Store

@@ -49,11 +49,12 @@ The current recommender:
 - generates profile-specific scoring hyperparameters
 - scores unseen candidates using content similarity plus structured affinity signals
 - diversifies results by genre, language, origin country, media type, and release era
+- uses recommendation feedback to filter or boost future picks
 - stores generated playlists so they can be reused and refreshed
 
 Recommendations may include titles that are not currently available on Netflix in your region.
 
-See [backend/RECOMMENDER_WORKFLOW.md](backend/RECOMMENDER_WORKFLOW.md) for the detailed recommendation generation flow.
+See [backend/RECOMMENDER_WORKFLOW.md](backend/RECOMMENDER_WORKFLOW.md) for the detailed recommendation generation flow, current capabilities, and future roadmap.
 
 ## Launch With Docker
 
@@ -164,6 +165,93 @@ make dev
 ```
 
 The Vite dev server usually runs at `http://localhost:5173`. The production Docker frontend runs at `http://localhost:3000`.
+
+## Deploy With Vercel
+
+Use Vercel for the React frontend. The Django backend should run on a host that
+supports a persistent web process, PostgreSQL, Redis, and an RQ worker, such as
+Render, Railway, Fly.io, Heroku-style platforms, or your own VPS. Vercel
+serverless functions are not a good fit for the current Django/RQ worker setup.
+
+### 1. Deploy The Backend First
+
+Provision:
+
+- PostgreSQL
+- Redis
+- one Django web process
+- one RQ worker process running `python manage.py rqworker recaps`
+
+Set backend environment variables:
+
+```env
+SECRET_KEY=replace-with-production-secret
+DEBUG=False
+ALLOWED_HOSTS=your-backend-domain.example.com
+POSTGRESQL_DB=...
+POSTGRESQL_USER=...
+POSTGRESQL_PASSWORD=...
+POSTGRESQL_HOST=...
+POSTGRESQL_PORT=5432
+REDIS_URL=redis://...
+FRONTEND_URL=https://your-vercel-app.vercel.app
+FRONTEND_ORIGINS=https://your-vercel-app.vercel.app
+TMDB_API_KEY=optional-tmdb-api-key
+LOG_LEVEL=INFO
+LOG_FORMAT=json
+```
+
+After deploying backend code, run:
+
+```bash
+python manage.py migrate
+python manage.py check
+```
+
+Confirm the backend is reachable:
+
+```text
+https://your-backend-domain.example.com/api/observability/health/
+```
+
+### 2. Create The Vercel Project
+
+In Vercel:
+
+- Import the GitHub repository.
+- Set the project root directory to `frontend`.
+- Use framework preset `Vite`.
+- Use install command `npm install`.
+- Use build command `npm run build`.
+- Use output directory `dist`.
+
+Set Vercel environment variables:
+
+```env
+VITE_API_BASE_URL=https://your-backend-domain.example.com
+```
+
+The file `frontend/vercel.json` rewrites all frontend routes to
+`index.html`, which allows direct visits to React Router routes such as
+`/recap`, `/create`, and `/auth/login`.
+
+### 3. Update Backend Origins After Vercel Assigns A Domain
+
+Once Vercel gives you the final production URL, update the backend:
+
+```env
+FRONTEND_URL=https://your-production-frontend-domain
+FRONTEND_ORIGINS=https://your-production-frontend-domain
+```
+
+If you use both a Vercel preview URL and a custom domain, provide a comma-separated list:
+
+```env
+FRONTEND_ORIGINS=https://your-app.vercel.app,https://www.your-custom-domain.com
+```
+
+Restart the backend after changing those values. This is required for CORS,
+CSRF, and secure cookie-based auth to work from the Vercel frontend.
 
 ## Observability
 

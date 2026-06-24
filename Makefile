@@ -10,7 +10,7 @@ BACKEND_URL := http://localhost:8000
 
 .PHONY: help setup setup-dev redis-start redis-stop redis-restart redis-status \
 	migrate migrations server server-json worker frontend backend backend-dev \
-	backend-json dev dev-json health test check shell
+	backend-json dev dev-json health refresh-recs test check shell
 
 help:
 	@printf '%s\n' \
@@ -33,6 +33,7 @@ help:
 		'  make dev            Start Redis, RQ, Django, and Vite together' \
 		'  make dev-json       Start the full dev stack with JSON backend logs' \
 		'  make health         Check backend database/cache/RQ health' \
+		'  make refresh-recs   Refresh stale saved profile recommendations' \
 		'  make test           Run backend tests' \
 		'  make check          Run Django system checks' \
 		'  make shell          Open the Django shell'
@@ -126,6 +127,9 @@ dev-json: redis-start
 health:
 	@curl -sS "$(BACKEND_URL)/api/observability/health/"
 	@printf '\n'
+
+refresh-recs:
+	@cd "$(BACKEND_DIR)" && $(MANAGE) refresh_recommendations
 
 test:
 	@cd "$(BACKEND_DIR)" && $(MANAGE) test api

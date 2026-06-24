@@ -212,6 +212,9 @@ def repair_cached_graph_data(
     profile_name,
     year,
 ):
+    if cached_result.get("_partial"):
+        return cached_result
+
     required_sections = {
         "profile_comparisons",
         "wrapped_cards",

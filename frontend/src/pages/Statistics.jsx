@@ -97,7 +97,7 @@ export default function Statistics() {
       return res.data;
     },
     queryKey: ["processingStatus", jobId],
-    enabled: !!jobId && !isAuthenticated,
+    enabled: !!jobId,
     refetchInterval: (query) => {
       const status = query.state.data?.status;
       return status && status !== "completed" && status !== "error" ? 2500 : false;
@@ -139,7 +139,9 @@ export default function Statistics() {
     queryKey: ["graphs", profile, year, jobId],
     enabled: !!profile && !!year && (!!jobId || isAuthenticated),
     refetchInterval: (query) => {
-      if (!profile || !year || !jobId || query.state.data) return false;
+      if (!profile || !year || !jobId) return false;
+      if (query.state.data?._partial) return 2500;
+      if (query.state.data) return false;
       return 2500;
     },
   });
@@ -220,7 +222,10 @@ export default function Statistics() {
 
   const sessionProfileYears = anonymousUpload?.profileYears || {};
   const statusProfileYears = processingStatus?.profile_years || {};
-  const readyProfileYears = processingStatus?.ready_profile_years || {};
+  const readyProfileYears =
+    processingStatus?.ready_profile_years ||
+    anonymousUpload?.readyProfileYears ||
+    {};
   const anonymousSessionExpired = anonymousUpload?.expiresAt
     ? new Date(anonymousUpload.expiresAt).getTime() <= Date.now()
     : false;
@@ -233,7 +238,9 @@ export default function Statistics() {
   const visibleData = authenticationExpired
     ? {}
     : isAuthenticated
-    ? storedData
+    ? Object.keys(statusProfileYears).length > 0
+      ? statusProfileYears
+      : storedData
     : Object.keys(statusProfileYears).length > 0
     ? statusProfileYears
     : sessionProfileYears;

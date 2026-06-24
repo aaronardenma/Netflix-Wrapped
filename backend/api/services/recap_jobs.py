@@ -15,12 +15,22 @@ from api.services.recap_data import (
     filter_profile_year,
     profile_comparisons_from_dataframe,
 )
+from api.services.viewing_ingestion import ingest_viewing_dataframe
 from utils.data_analysis import getJsonGraphData
 
 
 logger = logging.getLogger(__name__)
 QUEUE_NAME = "recaps"
 RECAP_JOB_TIMEOUT_SECONDS = 60 * 30
+INITIAL_RECAP_SECTIONS = [
+    "total_title_watchtime",
+    "total_type_watchtime",
+    "monthly_watchtime",
+    "ratings_watchtime",
+    "core_stats",
+    "title_level_insights",
+    "wrapped_cards",
+]
 
 
 def recap_job_id(job_id):
@@ -39,6 +49,34 @@ def enqueue_anonymous_recap(job_id, owner, profile_years):
         result_ttl=ANONYMOUS_CACHE_TTL_SECONDS,
         failure_ttl=ANONYMOUS_CACHE_TTL_SECONDS,
     )
+
+
+def enqueue_authenticated_recap(job_id, owner, user_id, profile_years, source_filename):
+    queue = django_rq.get_queue(QUEUE_NAME)
+    return queue.enqueue(
+        process_authenticated_upload,
+        job_id,
+        owner,
+        user_id,
+        profile_years,
+        source_filename,
+        job_id=recap_job_id(job_id),
+        job_timeout=RECAP_JOB_TIMEOUT_SECONDS,
+        result_ttl=ANONYMOUS_CACHE_TTL_SECONDS,
+        failure_ttl=ANONYMOUS_CACHE_TTL_SECONDS,
+    )
+
+
+def process_authenticated_upload(job_id, owner, user_id, profile_years, source_filename):
+    from django.contrib.auth import get_user_model
+
+    _, dataframe = load_upload(owner, job_id)
+    if dataframe is None:
+        raise RuntimeError("Cached upload not found")
+
+    user = get_user_model().objects.get(id=user_id)
+    ingest_viewing_dataframe(user, dataframe, source_filename=source_filename)
+    process_anonymous_upload(job_id, owner, profile_years)
 
 
 def process_anonymous_upload(job_id, owner, profile_years):
@@ -69,7 +107,7 @@ def process_anonymous_upload(job_id, owner, profile_years):
                 ),
             )
             pending.remove((profile_name, year))
-            _process_profile_year(
+            process_profile_year(
                 dataframe,
                 owner,
                 job_id,
@@ -95,7 +133,7 @@ def process_anonymous_upload(job_id, owner, profile_years):
         raise
 
 
-def _process_profile_year(
+def process_profile_year(
     dataframe,
     owner,
     job_id,
@@ -103,7 +141,8 @@ def _process_profile_year(
     year,
 ):
     cache_key = result_cache_key(owner, profile_name, year)
-    if cache.get(cache_key):
+    cached_result = cache.get(cache_key)
+    if cached_result and not cached_result.get("_partial"):
         update_processing_state(job_id, profile_name, year, "ready")
         return
 
@@ -138,6 +177,55 @@ def _process_profile_year(
     except Exception:
         logger.exception(
             "Failed processing %s - %s",
+            profile_name,
+            year,
+        )
+        update_processing_state(job_id, profile_name, year, "error")
+
+
+def process_initial_profile_year(
+    dataframe,
+    owner,
+    job_id,
+    profile_name,
+    year,
+):
+    cache_key = result_cache_key(owner, profile_name, year)
+    cached_result = cache.get(cache_key)
+    if cached_result:
+        if cached_result.get("_partial"):
+            update_processing_state(job_id, profile_name, year, "partial_ready")
+        else:
+            update_processing_state(job_id, profile_name, year, "ready")
+        return
+
+    update_processing_state(job_id, profile_name, year, "processing")
+    try:
+        profile_year_df = filter_profile_year(
+            dataframe,
+            profile_name,
+            year,
+        )
+        if profile_year_df.empty:
+            raise ValueError("No data found for this profile and year")
+
+        graph_data = getJsonGraphData(
+            profile_year_df,
+            profile_name,
+            year,
+            sections=INITIAL_RECAP_SECTIONS,
+        )
+        graph_data["_partial"] = True
+        graph_data["_sections_ready"] = INITIAL_RECAP_SECTIONS
+        cache.set(
+            cache_key,
+            graph_data,
+            timeout=ANONYMOUS_CACHE_TTL_SECONDS,
+        )
+        update_processing_state(job_id, profile_name, year, "partial_ready")
+    except Exception:
+        logger.exception(
+            "Failed initial processing %s - %s",
             profile_name,
             year,
         )

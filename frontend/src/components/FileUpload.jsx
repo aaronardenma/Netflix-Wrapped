@@ -66,6 +66,17 @@ const formatDuration = (startTime) => {
   return `${(elapsedMs / 1000).toFixed(2)}s (${Math.round(elapsedMs)}ms)`;
 };
 
+const firstProfileYear = (profileYears = {}) => {
+  const profileName = Object.keys(profileYears).sort()[0];
+  if (!profileName) return null;
+  const years = [...(profileYears[profileName] || [])]
+    .map(Number)
+    .filter((year) => !Number.isNaN(year))
+    .sort((a, b) => b - a);
+  if (!years.length) return null;
+  return { profileName, year: years[0] };
+};
+
 export default function FileUpload() {
   const { isAuthenticated } = useSelector(selectAuth);
   const [userYearsMap, setUserYearsMap] = useState({});
@@ -190,7 +201,14 @@ export default function FileUpload() {
       );
 
       const params = new URLSearchParams();
-      if (!isAuthenticated) {
+      const firstReadyRecap = firstProfileYear(
+        response.ready_profile_years || response.profile_years || {}
+      );
+      if (firstReadyRecap) {
+        params.set("profile", firstReadyRecap.profileName);
+        params.set("year", String(firstReadyRecap.year));
+      }
+      if (response.job_id) {
         params.set("job_id", response.job_id);
       }
       navigate(`/recap${params.toString() ? `?${params.toString()}` : ""}`);

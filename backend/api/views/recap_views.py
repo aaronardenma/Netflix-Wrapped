@@ -16,6 +16,7 @@ from utils.data_analysis import getJsonGraphData
 from ..authentication import JWTCookieAuthentication
 from ..models import NetflixProfile, ViewingEvent
 from ..services.recap_cache import (
+    ANONYMOUS_CACHE_TTL_SECONDS,
     anonymous_expiry,
     create_processing_state,
     get_processing_state,
@@ -40,9 +41,10 @@ from ..services.recap_data import (
     year_comparison_payload,
 )
 from ..services.recap_jobs import (
+    enqueue_authenticated_recap,
     enqueue_anonymous_recap,
+    process_initial_profile_year,
 )
-from ..services.viewing_ingestion import ingest_viewing_dataframe
 from ..utils import validate_csv_columns
 
 
@@ -72,6 +74,14 @@ def not_found_response(message="Data not found"):
         {"status": "not_found", "message": message},
         status=status.HTTP_404_NOT_FOUND,
     )
+
+
+def default_profile_year(profile_years_map):
+    for profile_name in sorted(profile_years_map):
+        years = sorted(profile_years_map[profile_name], reverse=True)
+        if years:
+            return profile_name, years[0]
+    return None, None
 
 
 class ViewingHistoryUploadView(APIView):
@@ -104,13 +114,6 @@ class ViewingHistoryUploadView(APIView):
             duplicate_count = before_dedup_count - len(df)
             source_filename = ", ".join(getattr(file, "name", "upload.csv") for file in uploaded_files)
             logger.info("Validated viewing history with %s rows", len(df))
-            if user_obj:
-                ingest_viewing_dataframe(
-                    user_obj,
-                    df,
-                    source_filename=source_filename,
-                )
-
             # Quick extraction of profile/year combinations
             df['parsed_start_time'] = pd.to_datetime(df["Start Time"], errors="coerce")
             df = df.dropna(subset=['parsed_start_time', 'Profile Name'])
@@ -133,46 +136,62 @@ class ViewingHistoryUploadView(APIView):
 
             processing_state = create_processing_state(
                 profile_years_map,
-                status_value="ready" if user_obj else "queued",
+                status_value="queued",
                 expires_at=expires_at,
             )
-
-            if user_obj:
-                processing_state["status"] = "completed"
-                return Response({
-                    "message": "CSV uploaded successfully.",
-                    "profile_years": profile_years_map,
-                    "ready_profile_years": ready_profile_years(processing_state),
-                    "processing_state": processing_state,
-                    "job_id": job_id,
-                    "status": "completed",
-                    "is_persisted": True,
-                    "merge_stats": {
-                        "files_uploaded": len(uploaded_files),
-                        "rows_read": raw_row_count,
-                        "duplicates_skipped": duplicate_count,
-                        "rows_accepted": len(df),
-                    },
-                })
 
             upload_data = {
                 "dataframe_json": df.to_json(orient="records"),
                 "profile_years_map": profile_years_map,
                 "owner_key": recap_owner,
                 "job_id": job_id,
-                "expires_at": expires_at.isoformat(),
+                "expires_at": expires_at.isoformat() if expires_at else None,
             }
             store_upload(recap_owner, job_id, upload_data)
             set_processing_state(job_id, processing_state)
-            enqueue_anonymous_recap(job_id, recap_owner, profile_years_map)
+
+            initial_profile, initial_year = default_profile_year(profile_years_map)
+            if initial_profile and initial_year:
+                process_initial_profile_year(
+                    df,
+                    recap_owner,
+                    job_id,
+                    initial_profile,
+                    initial_year,
+                )
+                update_processing_state(
+                    job_id,
+                    selected_profile=initial_profile,
+                )
+
+            processing_state = get_processing_state(job_id) or processing_state
+            if processing_state.get("processed", 0) + processing_state.get("failed", 0) >= processing_state.get("total", 0):
+                update_processing_state(job_id, job_status="completed")
+                processing_state = get_processing_state(job_id) or processing_state
+                cache.set(
+                    job_status_key(job_id),
+                    "completed",
+                    timeout=ANONYMOUS_CACHE_TTL_SECONDS,
+                )
+            else:
+                if user_obj:
+                    enqueue_authenticated_recap(
+                        job_id,
+                        recap_owner,
+                        user_obj.id,
+                        profile_years_map,
+                        source_filename,
+                    )
+                else:
+                    enqueue_anonymous_recap(job_id, recap_owner, profile_years_map)
 
             return Response({
                 "message": "CSV uploaded successfully. Processing in background.",
                 "profile_years": profile_years_map,
-                "ready_profile_years": {},
+                "ready_profile_years": ready_profile_years(processing_state),
                 "processing_state": processing_state,
                 "job_id": job_id,
-                "status": "processing",
+                "status": processing_state.get("status", "processing"),
                 "is_persisted": bool(user_obj),
                 "expires_at": expires_at.isoformat() if expires_at else None,
                 "merge_stats": {

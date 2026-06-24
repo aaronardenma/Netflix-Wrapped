@@ -26,11 +26,15 @@ from .services.recap_cache import (
     create_processing_state,
     get_processing_state,
     owner_key,
+    ready_profile_years,
     result_cache_key,
     set_processing_state,
     store_upload,
 )
-from .services.recap_jobs import process_anonymous_upload
+from .services.recap_jobs import (
+    process_anonymous_upload,
+    process_initial_profile_year,
+)
 from .views.recap_views import (
     AvailableRecapsView,
     RecapDataView,
@@ -387,6 +391,50 @@ class RecapQueueTests(TestCase):
         self.assertIsNotNone(
             cache.get(result_cache_key(self.owner, "Main", 2024))
         )
+
+    def test_initial_processing_returns_partial_then_worker_backfills(self):
+        process_initial_profile_year(
+            dataframe=pd.DataFrame(
+                [
+                    {
+                        "Profile Name": "Main",
+                        "Start Time": "2024-01-05 20:00:00",
+                        "Duration": "00:30:00",
+                        "Title": "Example Movie",
+                        "Attributes": "",
+                        "Bookmark": "",
+                        "Latest Bookmark": "",
+                        "Supplemental Video Type": None,
+                        "year": 2024,
+                    }
+                ]
+            ),
+            owner=self.owner,
+            job_id=self.job_id,
+            profile_name="Main",
+            year=2024,
+        )
+
+        state = get_processing_state(self.job_id)
+        partial_result = cache.get(result_cache_key(self.owner, "Main", 2024))
+        self.assertEqual(state["profiles"]["Main"]["2024"], "partial_ready")
+        self.assertEqual(ready_profile_years(state), {"Main": [2024]})
+        self.assertTrue(partial_result["_partial"])
+        self.assertIn("core_stats", partial_result)
+        self.assertNotIn("profile_comparisons", partial_result)
+
+        process_anonymous_upload(
+            self.job_id,
+            self.owner,
+            self.profile_years,
+        )
+
+        full_result = cache.get(result_cache_key(self.owner, "Main", 2024))
+        state = get_processing_state(self.job_id)
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["profiles"]["Main"]["2024"], "ready")
+        self.assertFalse(full_result.get("_partial", False))
+        self.assertIn("profile_comparisons", full_result)
 
 
 class ViewingIngestionTitleCleanupTests(TestCase):

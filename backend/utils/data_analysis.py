@@ -1014,7 +1014,7 @@ def getProfileComparisonData(dataframe: pd.DataFrame, selected_profile: str, yea
         "sankey_profile_genre_type": sankey,
     }
 
-def getJsonGraphData(dataframe, user, year):
+def getJsonGraphData(dataframe, user, year, sections=None):
     print(f"Received user: {user}, year: {year}")
     print(f"Pre-filtered dataframe rows: {len(dataframe)}")
 
@@ -1036,19 +1036,38 @@ def getJsonGraphData(dataframe, user, year):
     df = generateMediaType(df)
     df = generateRatings(df)
 
-    # Generate all graphs
+    requested_sections = set(sections or [
+        "total_title_watchtime",
+        "total_type_watchtime",
+        "monthly_watchtime",
+        "ratings_watchtime",
+        "core_stats",
+        "title_level_insights",
+        "wrapped_cards",
+        "genre_content_insights",
+        "visualizations",
+    ])
     graphs = {"schema_version": GRAPH_SCHEMA_VERSION}
     
     try:
-        graphs["total_title_watchtime"] = getTotalTitleWatchtimeData(df)
-        graphs["total_type_watchtime"] = getTotalTypeWatchtimeData(df)
-        graphs["monthly_watchtime"] = getMonthlyWatchtimeData(df)
-        graphs["ratings_watchtime"] = getMostWatchedRatingsData(df)
-        graphs["core_stats"] = getCoreStatsData(df)
-        graphs["title_level_insights"] = getTitleLevelInsightsData(df)
-        graphs["wrapped_cards"] = getWrappedCardsData(df)
-        graphs["genre_content_insights"] = getGenreContentInsightsData(df)
-        graphs["visualizations"] = getVisualizationData(df)
+        if "total_title_watchtime" in requested_sections:
+            graphs["total_title_watchtime"] = getTotalTitleWatchtimeData(df)
+        if "total_type_watchtime" in requested_sections:
+            graphs["total_type_watchtime"] = getTotalTypeWatchtimeData(df)
+        if "monthly_watchtime" in requested_sections:
+            graphs["monthly_watchtime"] = getMonthlyWatchtimeData(df)
+        if "ratings_watchtime" in requested_sections:
+            graphs["ratings_watchtime"] = getMostWatchedRatingsData(df)
+        if "core_stats" in requested_sections:
+            graphs["core_stats"] = getCoreStatsData(df)
+        if "title_level_insights" in requested_sections:
+            graphs["title_level_insights"] = getTitleLevelInsightsData(df)
+        if "wrapped_cards" in requested_sections:
+            graphs["wrapped_cards"] = getWrappedCardsData(df)
+        if "genre_content_insights" in requested_sections:
+            graphs["genre_content_insights"] = getGenreContentInsightsData(df)
+        if "visualizations" in requested_sections:
+            graphs["visualizations"] = getVisualizationData(df)
     except Exception as e:
         print(f"Error generating graph data: {str(e)}")
         return {"error": f"Failed to generate graph data: {str(e)}"}

@@ -11,6 +11,7 @@ from django.utils import timezone
 
 ANONYMOUS_CACHE_TTL_SECONDS = 60 * 60 * 24
 ANONYMOUS_CSV_TTL_SECONDS = 60 * 60 * 24
+USABLE_YEAR_STATUSES = {"ready", "partial_ready"}
 
 
 def owner_key(user, job_id):
@@ -114,7 +115,7 @@ def update_processing_state(
             previous_status = profile_state.get(str(year))
             profile_state[str(year)] = year_status
             if (
-                previous_status not in {"ready", "error"}
+                previous_status not in {"ready", "partial_ready", "error"}
                 and year_status in {"ready", "error"}
             ):
                 counter = "processed" if year_status == "ready" else "failed"
@@ -138,7 +139,7 @@ def ready_profile_years(state):
         completed_years = [
             int(year)
             for year, year_status in years.items()
-            if year_status == "ready"
+            if year_status in USABLE_YEAR_STATUSES
         ]
         if completed_years:
             ready[profile_name] = sorted(completed_years, reverse=True)
